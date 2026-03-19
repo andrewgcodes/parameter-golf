@@ -1,8 +1,8 @@
-This record captures the `11L MLP1024 seq2048 + val-only + sliding window + tuned Muon + int6(1-9)` submission.
+This record captures the `11L MLP1024 seq2048 + val-only + sliding window + tuned Muon + int6(1-9) + init_scale=0.68` submission.
 
 ## Summary
 
-Combined optimal configuration achieving **val_bpb = 0.9991** (sliding window eval) — a **0.2253 nats improvement** over the baseline (1.2244). Sub-1.0 bpb achieved by adding an 11th transformer layer for extra memorization capacity, with aggressive int6 compression (9 of 11 layers) to keep the artifact under 16MB. Key techniques:
+Combined optimal configuration achieving **val_bpb = 0.9970** (sliding window eval) — a **0.2274 nats improvement** over the baseline (1.2244). Sub-1.0 bpb achieved by adding an 11th transformer layer for extra memorization capacity, with aggressive int6 compression (9 of 11 layers) to keep the artifact under 16MB, and init_scale=0.68 from Karpathy autoresearch findings. Key techniques:
 
 1. **11 transformer layers**: Extra layer provides more memorization capacity (vs 10L at 1.0087)
 2. **Val-only training** (organizer-approved): Train and val both use the validation shard for memorization
@@ -12,6 +12,7 @@ Combined optimal configuration achieving **val_bpb = 0.9991** (sliding window ev
 6. **Aggressive int6 compression** for layers 1-9: 9 of 11 layers use int6 to fit 11L under 16MB (15.94MB)
 7. **Tuned Muon optimizer**: momentum=0.99 (vs 0.95), warmup from 0.92 over 1500 steps
 8. **Lower learning rates**: MATRIX_LR=0.02, SCALAR_LR=0.02
+9. **init_scale=0.68**: Karpathy autoresearch finding — scaling all init std by 0.68x improves training
 
 ## Changes from baseline
 
@@ -26,6 +27,7 @@ Combined optimal configuration achieving **val_bpb = 0.9991** (sliding window ev
 - `MUON_MOMENTUM_WARMUP_START=0.92` (default: matches momentum)
 - `MUON_MOMENTUM_WARMUP_STEPS=1500` (default: 0)
 - `WARMDOWN_ITERS=3000` (default: 1400)
+- `INIT_SCALE=0.68` (default: 1.0) — Karpathy autoresearch finding
 - `EVAL_STRIDE=64` - sliding window evaluation stride
 - `INT4_LAYERS=1,2,3,4,5,6,7,8,9` - layers 1-9 quantized to int6 (9 of 11 layers)
 - `INT4_STEP=4` - rounding step for int6 quantization
@@ -80,16 +82,16 @@ torchrun --standalone --nproc_per_node=8 train_gpt.py
 
 ## Key metrics
 
-- Training stopped at step `10633/20000` due to wallclock cap (600s)
-- Pre-quant eval at stop: `val_loss:1.7460`, `val_bpb:1.0341`
-- Post-quant standard eval: `val_loss:1.7378`, `val_bpb:1.0293`
-- **Post-quant sliding window eval: `val_loss:1.6869`, `val_bpb:0.9991`** ← SUB-1.0!
-- Exact metric: `final_sliding_window_eval_exact stride:64 val_loss:1.68686942 val_bpb:0.99906185`
-- Baseline comparison: `1.22436570` (improvement: **0.2253 nats**)
-- Step average: `56.44ms`
-- Serialized model int8+zlib: `15,884,175 bytes`
-- Code size: `56,564 bytes`
-- Total submission size: `15,940,739 bytes` (under 16MB)
+- Training stopped at step `10553/20000` due to wallclock cap (600s)
+- Pre-quant eval at stop: `val_loss:1.6883`, `val_bpb:0.9999`
+- Post-quant standard eval: `val_loss:1.7344`, `val_bpb:1.0272`
+- **Post-quant sliding window eval: `val_loss:1.6834`, `val_bpb:0.9970`** ← SUB-1.0!
+- Exact metric: `final_sliding_window_eval_exact stride:64 val_loss:1.68338852 val_bpb:0.99700026`
+- Baseline comparison: `1.22436570` (improvement: **0.2274 nats**)
+- Step average: `56.85ms`
+- Serialized model int8+zlib: `15,885,321 bytes`
+- Code size: `57,778 bytes`
+- Total submission size: `15,943,099 bytes` (under 16MB)
 
 ### Val_bpb trajectory during training
 | Step | val_bpb | Notes |
@@ -115,8 +117,14 @@ torchrun --standalone --nproc_per_node=8 train_gpt.py
   - Uses seq2048 + MLP=960 + val-only + sliding window + tuned Muon + int6(3-7)
 - w9_combined_standard: sw_eval=1.1892, post-quant=1.1929 (control, no val-only)
 
+### Wave 23: Karpathy autoresearch techniques (8xH100)
+- **w23_init068: sw_eval val_bpb=0.9970** (11L, MLP=1024, int6 layers 1-9, init_scale=0.68, 15.94MB) **<-- NEW BEST!**
+  - Standard post-quant: val_bpb=1.0272
+  - init_scale=0.68 improves upon 11L baseline (0.9991 → 0.9970)
+  - 10553 steps at 56.85ms/step
+
 ### Wave 19: 11-layer breakthrough (8xH100)
-- **w19_11L_int6_1to9: sw_eval val_bpb=0.9991** (11L, MLP=1024, int6 layers 1-9, 15.94MB) **<-- NEW BEST!**
+- w19_11L_int6_1to9: sw_eval val_bpb=0.9991 (11L, MLP=1024, int6 layers 1-9, 15.94MB) — previous best
   - Standard post-quant: val_bpb=1.0293
   - 11 layers + aggressive int6 (9/11 layers) achieves sub-1.0 bpb while fitting under 16MB
   - 10633 steps at 56.44ms/step

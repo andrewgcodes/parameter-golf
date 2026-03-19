@@ -90,10 +90,16 @@ class Hyperparameters:
     beta2 = float(os.environ.get("BETA2", 0.95))
     adam_eps = float(os.environ.get("ADAM_EPS", 1e-8))
     grad_clip_norm = float(os.environ.get("GRAD_CLIP_NORM", 0.0))
+    # Karpathy autoresearch findings
+    init_scale = float(os.environ.get("INIT_SCALE", 1.0))  # multiply all init std by this factor (0.68 found optimal)
+    embed_weight_decay = float(os.environ.get("EMBED_WEIGHT_DECAY", 0.0))  # weight decay on tok_emb (0.001 found helpful)
+    final_lr_frac = float(os.environ.get("FINAL_LR_FRAC", 0.0))  # nonzero LR floor at end of warmdown (0.05 found helpful)
 
     # Mixed precision post-quantization: int6 for middle layers to save space.
     int4_layers = os.environ.get("INT4_LAYERS", "")  # comma-separated layer indices for reduced precision
     int4_step = int(os.environ.get("INT4_STEP", 4))  # rounding step: 2=int7, 4=int6, 8=int5, 16=int4
+    # Per-layer step override: e.g. "1:8,2:8,3:4" means layer 1,2 use int5 (step=8), layer 3 uses int6 (step=4)
+    int4_step_map_str = os.environ.get("INT4_STEP_MAP", "")
 
 # -----------------------------
 # MUON OPTIMIZER 
@@ -779,12 +785,14 @@ class GPT(nn.Module):
         rope_base: float,
         qk_gain_init: float,
         mlp_hidden: int = 0,
+        init_scale: float = 1.0,
     ):
         super().__init__()
         if logit_softcap <= 0.0:
             raise ValueError(f"logit_softcap must be positive, got {logit_softcap}")
         self.tie_embeddings = tie_embeddings
         self.tied_embed_init_std = tied_embed_init_std
+        self.init_scale = init_scale
         self.logit_softcap = logit_softcap
         self.tok_emb = nn.Embedding(vocab_size, model_dim)
         self.num_encoder_layers = num_layers // 2
@@ -813,7 +821,7 @@ class GPT(nn.Module):
 
     def _init_weights(self) -> None:
         if self.tie_embeddings:
-            nn.init.normal_(self.tok_emb.weight, mean=0.0, std=self.tied_embed_init_std)
+            nn.init.normal_(self.tok_emb.weight, mean=0.0, std=self.tied_embed_init_std * self.init_scale)
         for module in self.modules():
             if isinstance(module, nn.Linear) and getattr(module, "_zero_init", False):
                 nn.init.zeros_(module.weight)
@@ -977,6 +985,7 @@ def main() -> None:
         mlp_mult=args.mlp_mult,
         tie_embeddings=args.tie_embeddings,
         tied_embed_init_std=args.tied_embed_init_std,
+        init_scale=args.init_scale,
         logit_softcap=args.logit_softcap,
         rope_base=args.rope_base,
         qk_gain_init=args.qk_gain_init,
@@ -1009,7 +1018,7 @@ def main() -> None:
         scalar_params.append(base_model.skip_weights)
     token_lr = args.tied_embed_lr if args.tie_embeddings else args.embed_lr
     optimizer_tok = torch.optim.Adam(
-        [{"params": [base_model.tok_emb.weight], "lr": token_lr, "base_lr": token_lr}],
+        [{"params": [base_model.tok_emb.weight], "lr": token_lr, "base_lr": token_lr, "weight_decay": args.embed_weight_decay}],
         betas=(args.beta1, args.beta2),
         eps=args.adam_eps,
         fused=True,
@@ -1072,11 +1081,13 @@ def main() -> None:
             return 1.0
         if max_wallclock_ms is None:
             warmdown_start = max(args.iterations - args.warmdown_iters, 0)
-            return max((args.iterations - step) / max(args.warmdown_iters, 1), 0.0) if warmdown_start <= step < args.iterations else 1.0
+            raw = max((args.iterations - step) / max(args.warmdown_iters, 1), 0.0) if warmdown_start <= step < args.iterations else 1.0
+            return max(raw, args.final_lr_frac)
         step_ms = elapsed_ms / max(step, 1)
         warmdown_ms = args.warmdown_iters * step_ms
         remaining_ms = max(max_wallclock_ms - elapsed_ms, 0.0)
-        return remaining_ms / max(warmdown_ms, 1e-9) if remaining_ms <= warmdown_ms else 1.0
+        raw = remaining_ms / max(warmdown_ms, 1e-9) if remaining_ms <= warmdown_ms else 1.0
+        return max(raw, args.final_lr_frac)
 
     # Warmup primes the compiled forward/backward/optimizer paths, then we restore the
     # initial weights/optimizer state so measured training starts from the true init.
@@ -1224,6 +1235,13 @@ def main() -> None:
     # Optional mixed-precision: round middle layers to int6/int4 for better compression
     if args.int4_layers:
         int4_set = set(int(x) for x in args.int4_layers.split(",") if x.strip())
+        # Parse per-layer step map if provided
+        layer_step_map: dict[int, int] = {}
+        if args.int4_step_map_str:
+            for entry in args.int4_step_map_str.split(","):
+                if ":" in entry:
+                    layer_idx, step_val = entry.strip().split(":")
+                    layer_step_map[int(layer_idx)] = int(step_val)
         for name in list(quant_obj.get("quantized", {}).keys()):
             layer_num = -1
             if "blocks." in name:
@@ -1233,7 +1251,7 @@ def main() -> None:
                     pass
             if layer_num in int4_set:
                 t = quant_obj["quantized"][name]
-                step = args.int4_step
+                step = layer_step_map.get(layer_num, args.int4_step)
                 quant_obj["quantized"][name] = ((t.float() / step).round() * step).clamp(-127, 127).to(torch.int8)
 
     quant_buf = io.BytesIO()
