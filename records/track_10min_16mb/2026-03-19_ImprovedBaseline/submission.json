@@ -1,11 +1,11 @@
 {
   "author": "andrewgcodes",
   "github_id": "andrewgcodes",
-  "name": "10L Mixed Precision (int6)",
-  "blurb": "10-layer transformer with mixed int8/int6 compression for middle layers (saves ~1.6MB) and optimized learning rates (MATRIX_LR=0.02). LAWA disabled as it increases quantization gap. Combines best techniques from upstream PRs and systematic experimentation.",
-  "date": "2026-03-19T04:45:00Z",
-  "val_loss": 2.05707848,
-  "val_bpb": 1.21831774,
-  "bytes_total": 15921103,
-  "bytes_code": 54721
+  "name": "10L Mixed Precision (int6) + FP16 Embed",
+  "blurb": "10-layer transformer with mixed int8/int6 compression for layers 2-7, FP16 tied embedding (nearly eliminates quantization gap), and optimized learning rates (MATRIX_LR=0.02). LAWA disabled as it increases quantization gap.",
+  "date": "2026-03-19T06:55:00Z",
+  "val_loss": 2.05486286,
+  "val_bpb": 1.21700553,
+  "bytes_total": 15408219,
+  "bytes_code": 54761
 }
