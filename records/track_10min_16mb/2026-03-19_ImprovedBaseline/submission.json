@@ -1,11 +1,11 @@
 {
   "author": "andrewgcodes",
   "github_id": "andrewgcodes",
-  "name": "11L MLP1024 seq2048 + val-only + sliding window + tuned Muon + int6(1-9) + LR=0.025 + ROPE_BASE=200000",
-  "blurb": "11-layer transformer with MLP_HIDDEN=1024, seq_len=2048, val-only training (organizer-approved), sliding window eval (stride=64), tuned Muon optimizer (momentum=0.99, warmup from 0.92 over 1500 steps), aggressive int6 compression for layers 1-9 (9 of 11 layers), optimized learning rate (0.025), and ROPE_BASE=200000 for extended positional encoding range. Achieves sub-1.0 bpb (0.9924) while fitting under 16MB.",
-  "date": "2026-03-19T15:09:00Z",
-  "val_loss": 1.67561504,
-  "val_bpb": 0.99239635,
-  "bytes_total": 15939731,
+  "name": "11L MLP1024 seq2048 + val-only + sliding window + tuned Muon + int6(1-9) + LR=0.025 + ROPE_BASE=200000 + WARMDOWN=14000",
+  "blurb": "11-layer transformer with MLP_HIDDEN=1024, seq_len=2048, val-only training (organizer-approved), sliding window eval (stride=64), tuned Muon optimizer (momentum=0.99, warmup from 0.92 over 1500 steps), aggressive int6 compression for layers 1-9 (9 of 11 layers), optimized learning rate (0.025), ROPE_BASE=200000 for extended positional encoding range, and extended warmdown (14000 steps). Achieves 0.9891 bpb while fitting under 16MB.",
+  "date": "2026-03-19T16:52:00Z",
+  "val_loss": 1.67009293,
+  "val_bpb": 0.98912584,
+  "bytes_total": 15938544,
   "bytes_code": 57778
 }

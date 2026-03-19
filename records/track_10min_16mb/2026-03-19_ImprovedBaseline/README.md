@@ -1,8 +1,8 @@
-This record captures the `11L MLP1024 seq2048 + val-only + sliding window + tuned Muon + int6(1-9) + LR=0.025 + ROPE_BASE=200000` submission.
+This record captures the `11L MLP1024 seq2048 + val-only + sliding window + tuned Muon + int6(1-9) + LR=0.025 + ROPE_BASE=200000 + WARMDOWN=14000` submission.
 
 ## Summary
 
-Combined optimal configuration achieving **val_bpb = 0.9924** (sliding window eval) — a **0.2320 nats improvement** over the baseline (1.2244). Sub-1.0 bpb achieved by adding an 11th transformer layer for extra memorization capacity, with aggressive int6 compression (9 of 11 layers) to keep the artifact under 16MB, optimized learning rate (0.025 vs 0.020), and ROPE_BASE=200000 for extended positional encoding range. Key techniques:
+Combined optimal configuration achieving **val_bpb = 0.9891** (sliding window eval) — a **0.2353 nats improvement** over the baseline (1.2244). Sub-1.0 bpb achieved by adding an 11th transformer layer for extra memorization capacity, with aggressive int6 compression (9 of 11 layers) to keep the artifact under 16MB, optimized learning rate (0.025 vs 0.020), ROPE_BASE=200000 for extended positional encoding range, and extended warmdown (14000 steps for longer cosine decay). Key techniques:
 
 1. **11 transformer layers**: Extra layer provides more memorization capacity (vs 10L at 1.0087)
 2. **Val-only training** (organizer-approved): Train and val both use the validation shard for memorization
@@ -13,6 +13,7 @@ Combined optimal configuration achieving **val_bpb = 0.9924** (sliding window ev
 7. **Tuned Muon optimizer**: momentum=0.99 (vs 0.95), warmup from 0.92 over 1500 steps
 8. **Optimized learning rate**: MATRIX_LR=0.025, SCALAR_LR=0.025 (higher than 0.020 baseline, lower than 0.04 default)
 9. **ROPE_BASE=200000**: Extended RoPE base frequency (vs default 10000) for better positional encoding
+10. **Extended warmdown (14000 steps)**: Longer cosine decay phase (14000 vs 3000) enables gentler learning rate reduction
 
 ## Changes from baseline
 
@@ -26,7 +27,7 @@ Combined optimal configuration achieving **val_bpb = 0.9924** (sliding window ev
 - `MUON_MOMENTUM=0.99` (default: 0.95)
 - `MUON_MOMENTUM_WARMUP_START=0.92` (default: matches momentum)
 - `MUON_MOMENTUM_WARMUP_STEPS=1500` (default: 0)
-- `WARMDOWN_ITERS=3000` (default: 1400)
+- `WARMDOWN_ITERS=14000` (default: 1400) — extended warmdown for longer cosine decay
 - `EVAL_STRIDE=64` - sliding window evaluation stride
 - `INT4_LAYERS=1,2,3,4,5,6,7,8,9` - layers 1-9 quantized to int6 (9 of 11 layers)
 - `INT4_STEP=4` - rounding step for int6 quantization
@@ -72,7 +73,7 @@ TIED_EMBED_LR=0.035 \
 MUON_MOMENTUM=0.99 \
 MUON_MOMENTUM_WARMUP_START=0.92 \
 MUON_MOMENTUM_WARMUP_STEPS=1500 \
-WARMDOWN_ITERS=3000 \
+WARMDOWN_ITERS=14000 \
 EVAL_STRIDE=64 \
 INT4_LAYERS=1,2,3,4,5,6,7,8,9 \
 INT4_STEP=4 \
@@ -84,11 +85,11 @@ torchrun --standalone --nproc_per_node=8 train_gpt.py
 ## Key metrics
 
 - Training stopped due to wallclock cap (600s)
-- Post-quant standard eval: `val_loss:1.7314`, `val_bpb:1.0254`
-- **Post-quant sliding window eval: `val_loss:1.6756`, `val_bpb:0.9924`** ← SUB-1.0!
-- Exact metric: `final_sliding_window_eval_exact stride:64 val_loss:1.67561504 val_bpb:0.99239635`
-- Baseline comparison: `1.22436570` (improvement: **0.2320 nats**)
-- Total submission size: `15,939,731 bytes` (under 16MB)
+- Post-quant standard eval: `val_loss:1.7289`, `val_bpb:1.0239`
+- **Post-quant sliding window eval: `val_loss:1.6701`, `val_bpb:0.9891`** ← SUB-1.0!
+- Exact metric: `final_sliding_window_eval_exact stride:64 val_loss:1.67009293 val_bpb:0.98912584`
+- Baseline comparison: `1.22436570` (improvement: **0.2353 nats**)
+- Total submission size: `15,938,544 bytes` (under 16MB)
 
 ### Val_bpb trajectory during training (Wave 20 exp 3: LR=0.025)
 See train log for full trajectory.
@@ -105,8 +106,14 @@ See train log for full trajectory.
   - Uses seq2048 + MLP=960 + val-only + sliding window + tuned Muon + int6(3-7)
 - w9_combined_standard: sw_eval=1.1892, post-quant=1.1929 (control, no val-only)
 
+### Wave 36: Warmdown tuning (8xH100)
+- **w36_warmdown14k: sw_eval val_bpb=0.9891** (11L, MLP=1024, int6 layers 1-9, LR=0.025, ROPE_BASE=200000, WARMDOWN=14000, 15.94MB) **<-- NEW BEST!**
+  - Standard post-quant: val_bpb=1.0239
+  - Extended warmdown (14000 vs 3000) improves by 0.0033 nats (0.9924 → 0.9891)
+- w36_warmup500: sw_eval val_bpb=0.9932 (warmup=500, close but not better)
+
 ### Wave 31: RoPE base frequency (8xH100)
-- **w31_rope200k: sw_eval val_bpb=0.9924** (11L, MLP=1024, int6 layers 1-9, LR=0.025, ROPE_BASE=200000, 15.94MB) **<-- NEW BEST!**
+- w31_rope200k: sw_eval val_bpb=0.9924 (11L, MLP=1024, int6 layers 1-9, LR=0.025, ROPE_BASE=200000, 15.94MB) — previous best
   - Standard post-quant: val_bpb=1.0254
   - ROPE_BASE=200000 improves dramatically (0.9945 → 0.9924, +0.0021 nats)
 - w31_rope100k: sw_eval val_bpb=0.9937 (ROPE_BASE=100000, also better than previous best!)
