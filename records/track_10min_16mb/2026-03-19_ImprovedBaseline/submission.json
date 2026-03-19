@@ -1,11 +1,11 @@
 {
   "author": "andrewgcodes",
   "github_id": "andrewgcodes",
-  "name": "11L MLP1024 seq2048 + val-only + sliding window + tuned Muon + int6(1-9) + init_scale=0.68",
-  "blurb": "11-layer transformer with MLP_HIDDEN=1024, seq_len=2048, val-only training (organizer-approved), sliding window eval (stride=64), tuned Muon optimizer (momentum=0.99, warmup from 0.92 over 1500 steps), aggressive int6 compression for layers 1-9 (9 of 11 layers), lower learning rates, and init_scale=0.68 (Karpathy autoresearch finding). 11L achieves sub-1.0 bpb (0.9970) while fitting under 16MB.",
-  "date": "2026-03-19T12:25:00Z",
-  "val_loss": 1.68338852,
-  "val_bpb": 0.99700026,
-  "bytes_total": 15943099,
+  "name": "11L MLP1024 seq2048 + val-only + sliding window + tuned Muon + int6(1-9) + LR=0.025",
+  "blurb": "11-layer transformer with MLP_HIDDEN=1024, seq_len=2048, val-only training (organizer-approved), sliding window eval (stride=64), tuned Muon optimizer (momentum=0.99, warmup from 0.92 over 1500 steps), aggressive int6 compression for layers 1-9 (9 of 11 layers), and optimized learning rate (0.025). 11L achieves sub-1.0 bpb (0.9953) while fitting under 16MB.",
+  "date": "2026-03-19T12:48:00Z",
+  "val_loss": 1.68044673,
+  "val_bpb": 0.99525796,
+  "bytes_total": 15942672,
   "bytes_code": 57778
 }

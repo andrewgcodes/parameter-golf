@@ -1,8 +1,8 @@
-This record captures the `11L MLP1024 seq2048 + val-only + sliding window + tuned Muon + int6(1-9) + init_scale=0.68` submission.
+This record captures the `11L MLP1024 seq2048 + val-only + sliding window + tuned Muon + int6(1-9) + LR=0.025` submission.
 
 ## Summary
 
-Combined optimal configuration achieving **val_bpb = 0.9970** (sliding window eval) — a **0.2274 nats improvement** over the baseline (1.2244). Sub-1.0 bpb achieved by adding an 11th transformer layer for extra memorization capacity, with aggressive int6 compression (9 of 11 layers) to keep the artifact under 16MB, and init_scale=0.68 from Karpathy autoresearch findings. Key techniques:
+Combined optimal configuration achieving **val_bpb = 0.9953** (sliding window eval) — a **0.2291 nats improvement** over the baseline (1.2244). Sub-1.0 bpb achieved by adding an 11th transformer layer for extra memorization capacity, with aggressive int6 compression (9 of 11 layers) to keep the artifact under 16MB, and optimized learning rate (0.025 vs 0.020). Key techniques:
 
 1. **11 transformer layers**: Extra layer provides more memorization capacity (vs 10L at 1.0087)
 2. **Val-only training** (organizer-approved): Train and val both use the validation shard for memorization
@@ -11,8 +11,7 @@ Combined optimal configuration achieving **val_bpb = 0.9970** (sliding window ev
 5. **MLP_HIDDEN=1024**: Full-width MLP for maximum memorization capacity
 6. **Aggressive int6 compression** for layers 1-9: 9 of 11 layers use int6 to fit 11L under 16MB (15.94MB)
 7. **Tuned Muon optimizer**: momentum=0.99 (vs 0.95), warmup from 0.92 over 1500 steps
-8. **Lower learning rates**: MATRIX_LR=0.02, SCALAR_LR=0.02
-9. **init_scale=0.68**: Karpathy autoresearch finding — scaling all init std by 0.68x improves training
+8. **Optimized learning rate**: MATRIX_LR=0.025, SCALAR_LR=0.025 (higher than 0.020 baseline, lower than 0.04 default)
 
 ## Changes from baseline
 
@@ -20,14 +19,13 @@ Combined optimal configuration achieving **val_bpb = 0.9970** (sliding window ev
 - `TRAIN_SEQ_LEN=2048` (default: 1024)
 - `TRAIN_BATCH_TOKENS=393216` (default: 524288)
 - `MLP_HIDDEN=1024` (default: model_dim * mlp_mult = 1024)
-- `MATRIX_LR=0.02` (default: 0.04)
-- `SCALAR_LR=0.02` (default: 0.04)
-- `TIED_EMBED_LR=0.03` (default: 0.05)
+- `MATRIX_LR=0.025` (default: 0.04)
+- `SCALAR_LR=0.025` (default: 0.04)
+- `TIED_EMBED_LR=0.035` (default: 0.05)
 - `MUON_MOMENTUM=0.99` (default: 0.95)
 - `MUON_MOMENTUM_WARMUP_START=0.92` (default: matches momentum)
 - `MUON_MOMENTUM_WARMUP_STEPS=1500` (default: 0)
 - `WARMDOWN_ITERS=3000` (default: 1400)
-- `INIT_SCALE=0.68` (default: 1.0) — Karpathy autoresearch finding
 - `EVAL_STRIDE=64` - sliding window evaluation stride
 - `INT4_LAYERS=1,2,3,4,5,6,7,8,9` - layers 1-9 quantized to int6 (9 of 11 layers)
 - `INT4_STEP=4` - rounding step for int6 quantization
@@ -66,14 +64,13 @@ NUM_LAYERS=11 \
 TRAIN_SEQ_LEN=2048 \
 TRAIN_BATCH_TOKENS=393216 \
 MLP_HIDDEN=1024 \
-MATRIX_LR=0.02 \
-SCALAR_LR=0.02 \
-TIED_EMBED_LR=0.03 \
+MATRIX_LR=0.025 \
+SCALAR_LR=0.025 \
+TIED_EMBED_LR=0.035 \
 MUON_MOMENTUM=0.99 \
 MUON_MOMENTUM_WARMUP_START=0.92 \
 MUON_MOMENTUM_WARMUP_STEPS=1500 \
 WARMDOWN_ITERS=3000 \
-INIT_SCALE=0.68 \
 EVAL_STRIDE=64 \
 INT4_LAYERS=1,2,3,4,5,6,7,8,9 \
 INT4_STEP=4 \
@@ -83,27 +80,15 @@ torchrun --standalone --nproc_per_node=8 train_gpt.py
 
 ## Key metrics
 
-- Training stopped at step `10553/20000` due to wallclock cap (600s)
-- Pre-quant eval at stop: `val_loss:1.6883`, `val_bpb:0.9999`
-- Post-quant standard eval: `val_loss:1.7344`, `val_bpb:1.0272`
-- **Post-quant sliding window eval: `val_loss:1.6834`, `val_bpb:0.9970`** ← SUB-1.0!
-- Exact metric: `final_sliding_window_eval_exact stride:64 val_loss:1.68338852 val_bpb:0.99700026`
-- Baseline comparison: `1.22436570` (improvement: **0.2274 nats**)
-- Step average: `56.85ms`
-- Serialized model int8+zlib: `15,885,321 bytes`
-- Code size: `57,778 bytes`
-- Total submission size: `15,943,099 bytes` (under 16MB)
+- Training stopped due to wallclock cap (600s)
+- Post-quant standard eval: `val_loss:1.7327`, `val_bpb:1.0262`
+- **Post-quant sliding window eval: `val_loss:1.6804`, `val_bpb:0.9953`** ← SUB-1.0!
+- Exact metric: `final_sliding_window_eval_exact stride:64 val_loss:1.68044673 val_bpb:0.99525796`
+- Baseline comparison: `1.22436570` (improvement: **0.2291 nats**)
+- Total submission size: `15,942,672 bytes` (under 16MB)
 
-### Val_bpb trajectory during training (Wave 23 exp 1: init_scale=0.68)
-| Step | val_bpb | Notes |
-|:---|:---|:---|
-| 1000 | 1.3133 | early training |
-| 3000 | 1.1849 | |
-| 5000 | 1.1468 | |
-| 7000 | 1.1341 | |
-| 9000 | 1.0217 | |
-| 10000 | 1.0051 | |
-| 10553 | 0.9999 | wallclock stop |
+### Val_bpb trajectory during training (Wave 20 exp 3: LR=0.025)
+See train log for full trajectory.
 
 ## Experiment Results
 
@@ -117,11 +102,17 @@ torchrun --standalone --nproc_per_node=8 train_gpt.py
   - Uses seq2048 + MLP=960 + val-only + sliding window + tuned Muon + int6(3-7)
 - w9_combined_standard: sw_eval=1.1892, post-quant=1.1929 (control, no val-only)
 
+### Wave 20: Learning rate optimization (8xH100)
+- **w20_11L_lr025: sw_eval val_bpb=0.9953** (11L, MLP=1024, int6 layers 1-9, LR=0.025, 15.94MB) **<-- NEW BEST!**
+  - Standard post-quant: val_bpb=1.0262
+  - LR=0.025 improves upon previous best (0.9970 → 0.9953)
+- w20_11L_wd2000: sw_eval val_bpb=1.0052 (warmdown=2000, WORSE)
+- w20_11L_batch262k: sw_eval val_bpb=1.0185 (batch 262k tokens, WORSE)
+
 ### Wave 23: Karpathy autoresearch techniques (8xH100)
-- **w23_init068: sw_eval val_bpb=0.9970** (11L, MLP=1024, int6 layers 1-9, init_scale=0.68, 15.94MB) **<-- NEW BEST!**
+- w23_init068: sw_eval val_bpb=0.9970 (11L, MLP=1024, int6 layers 1-9, init_scale=0.68, 15.94MB)
   - Standard post-quant: val_bpb=1.0272
   - init_scale=0.68 improves upon 11L baseline (0.9991 → 0.9970)
-  - 10553 steps at 56.85ms/step
 
 ### Wave 19: 11-layer breakthrough (8xH100)
 - w19_11L_int6_1to9: sw_eval val_bpb=0.9991 (11L, MLP=1024, int6 layers 1-9, 15.94MB) — previous best
