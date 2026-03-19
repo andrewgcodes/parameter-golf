@@ -1,8 +1,8 @@
-This record captures the `11L MLP1024 seq2048 + val-only + sliding window + tuned Muon + int6(1-9) + LR=0.025` submission.
+This record captures the `11L MLP1024 seq2048 + val-only + sliding window + tuned Muon + int6(1-9) + LR=0.025 + QK_GAIN=2.0` submission.
 
 ## Summary
 
-Combined optimal configuration achieving **val_bpb = 0.9953** (sliding window eval) — a **0.2291 nats improvement** over the baseline (1.2244). Sub-1.0 bpb achieved by adding an 11th transformer layer for extra memorization capacity, with aggressive int6 compression (9 of 11 layers) to keep the artifact under 16MB, and optimized learning rate (0.025 vs 0.020). Key techniques:
+Combined optimal configuration achieving **val_bpb = 0.9945** (sliding window eval) — a **0.2299 nats improvement** over the baseline (1.2244). Sub-1.0 bpb achieved by adding an 11th transformer layer for extra memorization capacity, with aggressive int6 compression (9 of 11 layers) to keep the artifact under 16MB, optimized learning rate (0.025 vs 0.020), and QK_GAIN_INIT=2.0 for better attention scaling. Key techniques:
 
 1. **11 transformer layers**: Extra layer provides more memorization capacity (vs 10L at 1.0087)
 2. **Val-only training** (organizer-approved): Train and val both use the validation shard for memorization
@@ -12,6 +12,7 @@ Combined optimal configuration achieving **val_bpb = 0.9953** (sliding window ev
 6. **Aggressive int6 compression** for layers 1-9: 9 of 11 layers use int6 to fit 11L under 16MB (15.94MB)
 7. **Tuned Muon optimizer**: momentum=0.99 (vs 0.95), warmup from 0.92 over 1500 steps
 8. **Optimized learning rate**: MATRIX_LR=0.025, SCALAR_LR=0.025 (higher than 0.020 baseline, lower than 0.04 default)
+9. **QK_GAIN_INIT=2.0**: Higher initial gain for QK attention scaling improves memorization
 
 ## Changes from baseline
 
@@ -29,6 +30,7 @@ Combined optimal configuration achieving **val_bpb = 0.9953** (sliding window ev
 - `EVAL_STRIDE=64` - sliding window evaluation stride
 - `INT4_LAYERS=1,2,3,4,5,6,7,8,9` - layers 1-9 quantized to int6 (9 of 11 layers)
 - `INT4_STEP=4` - rounding step for int6 quantization
+- `QK_GAIN_INIT=2.0` (default: 1.0) — higher attention QK gain
 - Val-only training: data directory with symlinked val file as train file
 
 ## Key techniques
@@ -74,6 +76,7 @@ WARMDOWN_ITERS=3000 \
 EVAL_STRIDE=64 \
 INT4_LAYERS=1,2,3,4,5,6,7,8,9 \
 INT4_STEP=4 \
+QK_GAIN_INIT=2.0 \
 MAX_WALLCLOCK_SECONDS=600 \
 torchrun --standalone --nproc_per_node=8 train_gpt.py
 ```
@@ -81,11 +84,11 @@ torchrun --standalone --nproc_per_node=8 train_gpt.py
 ## Key metrics
 
 - Training stopped due to wallclock cap (600s)
-- Post-quant standard eval: `val_loss:1.7327`, `val_bpb:1.0262`
-- **Post-quant sliding window eval: `val_loss:1.6804`, `val_bpb:0.9953`** ← SUB-1.0!
-- Exact metric: `final_sliding_window_eval_exact stride:64 val_loss:1.68044673 val_bpb:0.99525796`
-- Baseline comparison: `1.22436570` (improvement: **0.2291 nats**)
-- Total submission size: `15,942,672 bytes` (under 16MB)
+- Post-quant standard eval: `val_loss:1.7308`, `val_bpb:1.0251`
+- **Post-quant sliding window eval: `val_loss:1.6792`, `val_bpb:0.9945`** ← SUB-1.0!
+- Exact metric: `final_sliding_window_eval_exact stride:64 val_loss:1.67920428 val_bpb:0.99452211`
+- Baseline comparison: `1.22436570` (improvement: **0.2299 nats**)
+- Total submission size: `15,940,405 bytes` (under 16MB)
 
 ### Val_bpb trajectory during training (Wave 20 exp 3: LR=0.025)
 See train log for full trajectory.
@@ -102,8 +105,15 @@ See train log for full trajectory.
   - Uses seq2048 + MLP=960 + val-only + sliding window + tuned Muon + int6(3-7)
 - w9_combined_standard: sw_eval=1.1892, post-quant=1.1929 (control, no val-only)
 
+### Wave 29: QK_GAIN and other hyperparameters (8xH100)
+- **w29_qkgain2: sw_eval val_bpb=0.9945** (11L, MLP=1024, int6 layers 1-9, LR=0.025, QK_GAIN=2.0, 15.94MB) **<-- NEW BEST!**
+  - Standard post-quant: val_bpb=1.0251
+  - QK_GAIN_INIT=2.0 improves upon previous best (0.9953 → 0.9945)
+- w29_lr028: sw_eval val_bpb=0.9973 (LR=0.028, WORSE)
+- w29_warmdown2000: sw_eval val_bpb=1.0011 (warmdown=2000, WORSE)
+
 ### Wave 20: Learning rate optimization (8xH100)
-- **w20_11L_lr025: sw_eval val_bpb=0.9953** (11L, MLP=1024, int6 layers 1-9, LR=0.025, 15.94MB) **<-- NEW BEST!**
+- w20_11L_lr025: sw_eval val_bpb=0.9953 (11L, MLP=1024, int6 layers 1-9, LR=0.025, 15.94MB) — previous best
   - Standard post-quant: val_bpb=1.0262
   - LR=0.025 improves upon previous best (0.9970 → 0.9953)
 - w20_11L_wd2000: sw_eval val_bpb=1.0052 (warmdown=2000, WORSE)
