@@ -1,11 +1,7 @@
 """
-Improved Parameter Golf submission.
-Key changes over baseline:
-1. 10 transformer layers (vs baseline 9) for more model capacity
-2. Mixed int8/int6 compression: int6 for middle layers saves ~1.6MB, allowing extra layer
-3. FP16 tied embedding passthrough: kills quantization gap from ~0.007 to ~0.0005 BPB
-4. LAWA (Lookahead Weight Averaging): free quality boost during warmdown
-5. Lower learning rates: MATRIX_LR=0.02, SCALAR_LR=0.02 optimal per LR sweep
+The `train_gpt.py` and `train_gpt_mlx.py` scripts are intended as good launching-off points for new participants, not SOTA configs. We'll accept PRs that tune, improve, or simplify these scripts without significantly increasing complexity, but competitive submissions should stay in the `/records` folder.
+
+Hard stop: To keep readable for newcomers, let's make sure `train_gpt.py` and `train_gpt_mlx.py` never are longer than 1500 lines.
 """
 
 from __future__ import annotations
@@ -53,63 +49,51 @@ class Hyperparameters:
     val_batch_size = int(os.environ.get("VAL_BATCH_SIZE", 524_288))
     val_loss_every = int(os.environ.get("VAL_LOSS_EVERY", 1000))
     train_log_every = int(os.environ.get("TRAIN_LOG_EVERY", 200))
+    # Sliding window eval: stride controls how many tokens to slide between windows.
+    # Only the last `eval_stride` tokens per window are scored, giving each scored token
+    # (seq_len - eval_stride) tokens of context. Set to 0 to disable (use standard eval).
+    eval_stride = int(os.environ.get("EVAL_STRIDE", 64))
 
     # Training length.
     iterations = int(os.environ.get("ITERATIONS", 20000))
-    warmdown_iters = int(os.environ.get("WARMDOWN_ITERS", 1400))
+    warmdown_iters = int(os.environ.get("WARMDOWN_ITERS", 3000))
     warmup_steps = int(os.environ.get("WARMUP_STEPS", 20))
-    train_batch_tokens = int(os.environ.get("TRAIN_BATCH_TOKENS", 524_288))
-    train_seq_len = int(os.environ.get("TRAIN_SEQ_LEN", 1024))
+    train_batch_tokens = int(os.environ.get("TRAIN_BATCH_TOKENS", 393_216))
+    train_seq_len = int(os.environ.get("TRAIN_SEQ_LEN", 4096))
     max_wallclock_seconds = float(os.environ.get("MAX_WALLCLOCK_SECONDS", 600.0))
     qk_gain_init = float(os.environ.get("QK_GAIN_INIT", 1.5))
 
     # Model shape.
     vocab_size = int(os.environ.get("VOCAB_SIZE", 1024))
-    num_layers = int(os.environ.get("NUM_LAYERS", 9))
-    num_unique_blocks = int(os.environ.get("NUM_UNIQUE_BLOCKS", 0))  # 0 = no sharing (use num_layers unique blocks)
+    num_layers = int(os.environ.get("NUM_LAYERS", 10))
     num_kv_heads = int(os.environ.get("NUM_KV_HEADS", 4))
     model_dim = int(os.environ.get("MODEL_DIM", 512))
     num_heads = int(os.environ.get("NUM_HEADS", 8))
     mlp_mult = int(os.environ.get("MLP_MULT", 2))
-    mlp_hidden = int(os.environ.get("MLP_HIDDEN", 0))  # 0 = use mlp_mult * model_dim
+    mlp_hidden = int(os.environ.get("MLP_HIDDEN", 960))  # trimmed from 1024 to fit fp16 embedding
     tie_embeddings = bool(int(os.environ.get("TIE_EMBEDDINGS", "1")))
     rope_base = float(os.environ.get("ROPE_BASE", 10000.0))
     logit_softcap = float(os.environ.get("LOGIT_SOFTCAP", 30.0))
 
-    # FP16 tied embedding passthrough (keep embedding in fp16 instead of int8 for better quality).
-    fp16_embed = bool(int(os.environ.get("FP16_EMBED", "1")))  # keep tied embedding in fp16
-
-    # Quantization-Aware Training (QAT).
-    qat_start_frac = float(os.environ.get("QAT_START_FRAC", 0.0))  # fraction of training before enabling QAT (0=start of training)
-    qat_enabled = bool(int(os.environ.get("QAT_ENABLED", "0")))  # disable QAT by default (too expensive per experiments)
-
-    # Compression-aware regularization.
-    outlier_reg_weight = float(os.environ.get("OUTLIER_REG_WEIGHT", 0.0))  # disabled by default
-
-    # Mixed precision post-quantization: int6 for middle layers to save space.
-    prune_ratio = float(os.environ.get("PRUNE_RATIO", 0.0))  # fraction of int8 range to prune
-    int4_layers = os.environ.get("INT4_LAYERS", "")  # comma-separated layer indices for reduced precision
-    int4_step = int(os.environ.get("INT4_STEP", 4))  # rounding step: 2=int7, 4=int6, 8=int5, 16=int4
-
-    # LAWA: Lookahead Weight Averaging during warmdown for free quality boost.
-    lawa_enabled = bool(int(os.environ.get("LAWA_ENABLED", "0")))  # disabled: increases quantization gap
-    lawa_interval = int(os.environ.get("LAWA_INTERVAL", 50))  # average every N steps during warmdown
-
     # Optimizer hyperparameters.
     embed_lr = float(os.environ.get("EMBED_LR", 0.6))
     head_lr = float(os.environ.get("HEAD_LR", 0.008))
+    tied_embed_lr = float(os.environ.get("TIED_EMBED_LR", 0.030))
     tied_embed_init_std = float(os.environ.get("TIED_EMBED_INIT_STD", 0.005))
-    matrix_lr = float(os.environ.get("MATRIX_LR", 0.02))
-    scalar_lr = float(os.environ.get("SCALAR_LR", 0.02))
-    muon_momentum = float(os.environ.get("MUON_MOMENTUM", 0.95))
+    matrix_lr = float(os.environ.get("MATRIX_LR", 0.020))
+    scalar_lr = float(os.environ.get("SCALAR_LR", 0.020))
+    muon_momentum = float(os.environ.get("MUON_MOMENTUM", 0.99))
     muon_backend_steps = int(os.environ.get("MUON_BACKEND_STEPS", 5))
-    muon_momentum_warmup_start = float(os.environ.get("MUON_MOMENTUM_WARMUP_START", 0.85))
-    muon_momentum_warmup_steps = int(os.environ.get("MUON_MOMENTUM_WARMUP_STEPS", 500))
+    muon_momentum_warmup_start = float(os.environ.get("MUON_MOMENTUM_WARMUP_START", 0.92))
+    muon_momentum_warmup_steps = int(os.environ.get("MUON_MOMENTUM_WARMUP_STEPS", 1500))
     beta1 = float(os.environ.get("BETA1", 0.9))
     beta2 = float(os.environ.get("BETA2", 0.95))
     adam_eps = float(os.environ.get("ADAM_EPS", 1e-8))
-    tied_embed_lr = float(os.environ.get("TIED_EMBED_LR", 0.03))
     grad_clip_norm = float(os.environ.get("GRAD_CLIP_NORM", 0.0))
+
+    # Mixed precision post-quantization: int6 for middle layers to save space.
+    int4_layers = os.environ.get("INT4_LAYERS", "")  # comma-separated layer indices for reduced precision
+    int4_step = int(os.environ.get("INT4_STEP", 4))  # rounding step: 2=int7, 4=int6, 8=int5, 16=int4
 
 # -----------------------------
 # MUON OPTIMIZER 
@@ -302,6 +286,101 @@ def eval_val(
     model.train()
     return float(val_loss.item()), float(bits_per_token * tokens_per_byte)
 
+
+def eval_val_sliding_window(
+    args: Hyperparameters,
+    base_model: nn.Module,
+    rank: int,
+    world_size: int,
+    device: torch.device,
+    val_tokens: Tensor,
+    base_bytes_lut: Tensor,
+    has_leading_space_lut: Tensor,
+    is_boundary_token_lut: Tensor,
+    stride: int = 64,
+) -> tuple[float, float]:
+    """Sliding window evaluation: each scored token gets (seq_len - stride) context.
+
+    Instead of chopping validation into non-overlapping 1024-token blocks (where
+    the first token in each block gets zero context), we slide a 1024-token window
+    by `stride` tokens at a time and only score the last `stride` tokens per window.
+    Every scored token sees 960+ tokens of context, dramatically improving BPB.
+    """
+    seq_len = args.train_seq_len
+    total_tokens = val_tokens.numel() - 1  # need 1 extra for final target
+
+    # Number of windows: first window at offset 0, then slide by stride
+    num_windows = max((total_tokens - seq_len) // stride + 1, 1)
+
+    # Distribute windows across ranks
+    win_start = (num_windows * rank) // world_size
+    win_end = (num_windows * (rank + 1)) // world_size
+
+    val_loss_sum = torch.zeros((), device=device, dtype=torch.float64)
+    val_token_count = torch.zeros((), device=device, dtype=torch.float64)
+    val_byte_count = torch.zeros((), device=device, dtype=torch.float64)
+
+    # Eval batch: how many windows per forward pass. Tune for memory.
+    eval_batch = int(os.environ.get("SW_EVAL_BATCH", 32))
+
+    base_model.eval()
+    with torch.inference_mode():
+        window_list = list(range(win_start, win_end))
+        num_batches = (len(window_list) + eval_batch - 1) // eval_batch
+        for batch_idx in range(num_batches):
+            batch_wins = window_list[batch_idx * eval_batch : (batch_idx + 1) * eval_batch]
+            bsz = len(batch_wins)
+
+            # Build input: each window is val_tokens[w*stride : w*stride + seq_len]
+            inputs = torch.stack([
+                val_tokens[w * stride : w * stride + seq_len]
+                for w in batch_wins
+            ]).to(device=device, dtype=torch.int64)  # [B, seq_len]
+
+            with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=True):
+                logits = base_model.forward_logits(inputs)  # [B, seq_len, vocab]
+
+            # Score only the last `stride` positions per window.
+            # logits[:, j, :] predicts the token AFTER position j in the input.
+            # So logits[:, -stride:, :] predicts tokens at input positions
+            # [seq_len - stride + 1, seq_len + 1) — which are the targets.
+            scored_logits = logits[:, -stride:, :].reshape(-1, logits.size(-1))  # [B*stride, vocab]
+
+            # Build targets: for window w, targets are val_tokens[w*stride + seq_len - stride + 1 : w*stride + seq_len + 1]
+            targets = torch.stack([
+                val_tokens[w * stride + seq_len - stride + 1 : w * stride + seq_len + 1]
+                for w in batch_wins
+            ]).to(device=device, dtype=torch.int64).reshape(-1)  # [B*stride]
+
+            loss = F.cross_entropy(scored_logits.float(), targets, reduction="sum")
+            val_loss_sum += loss.to(torch.float64)
+            val_token_count += float(targets.numel())
+
+            # BPB: prev_ids are the input tokens at each scored position
+            prev_ids = torch.stack([
+                val_tokens[w * stride + seq_len - stride : w * stride + seq_len]
+                for w in batch_wins
+            ]).to(device=device, dtype=torch.int64).reshape(-1)  # [B*stride]
+
+            tgt_ids = targets
+            token_bytes = base_bytes_lut[tgt_ids].to(dtype=torch.int16)
+            token_bytes += (has_leading_space_lut[tgt_ids] & ~is_boundary_token_lut[prev_ids]).to(dtype=torch.int16)
+            val_byte_count += token_bytes.to(torch.float64).sum()
+
+            if rank == 0 and (batch_idx + 1) % 100 == 0:
+                print(f"  sw_eval batch {batch_idx + 1}/{num_batches}", flush=True)
+
+    if dist.is_available() and dist.is_initialized():
+        dist.all_reduce(val_loss_sum, op=dist.ReduceOp.SUM)
+        dist.all_reduce(val_token_count, op=dist.ReduceOp.SUM)
+        dist.all_reduce(val_byte_count, op=dist.ReduceOp.SUM)
+
+    val_loss = val_loss_sum / val_token_count
+    bits_per_token = val_loss.item() / math.log(2.0)
+    tokens_per_byte = val_token_count.item() / val_byte_count.item()
+    base_model.train()
+    return float(val_loss.item()), float(bits_per_token * tokens_per_byte)
+
 # -----------------------------
 # POST-TRAINING QUANTIZATION
 # -----------------------------
@@ -327,15 +406,11 @@ INT8_KEEP_FLOAT_FP32_NAME_PATTERNS = tuple(
     if pattern
 )
 INT8_KEEP_FLOAT_MAX_NUMEL = 65_536
-# Patterns for tensors that should always be kept in fp16 passthrough (not int8 quantized)
-# even if they exceed INT8_KEEP_FLOAT_MAX_NUMEL.
-INT8_FORCE_FP16_NAME_PATTERNS: tuple[str, ...] = tuple(
-    pattern
-    for pattern in os.environ.get(
-        "INT8_FORCE_FP16_NAME_PATTERNS",
-        "tok_emb" if bool(int(os.environ.get("FP16_EMBED", "1"))) else "",
-    ).split(",")
-    if pattern
+# Large tensors to keep as fp16 passthrough instead of int8 quantization.
+# Tied embeddings serve dual duty (input + output head) and are disproportionately
+# sensitive to quantization noise (~0.007 BPB gap).
+FP16_PASSTHROUGH_PATTERNS = tuple(
+    p for p in os.environ.get("FP16_PASSTHROUGH_PATTERNS", "tok_emb").split(",") if p
 )
 INT8_KEEP_FLOAT_STORE_DTYPE = torch.float16
 INT8_PER_ROW_SCALE_DTYPE = torch.float16
@@ -403,13 +478,17 @@ def quantize_state_dict_int8(state_dict: dict[str, Tensor]):
             stats["int8_payload_bytes"] += tensor_nbytes(t)
             continue
 
-        # Force certain tensors (e.g. tied embedding) to fp16 passthrough
-        # regardless of size. This kills the quantization gap for embeddings.
-        force_fp16 = any(pattern in name for pattern in INT8_FORCE_FP16_NAME_PATTERNS)
-
         # Small float tensors are cheap enough to keep directly. We still downcast
         # fp32/bf16 passthrough tensors to fp16 so metadata does not dominate size.
-        if t.numel() <= INT8_KEEP_FLOAT_MAX_NUMEL or force_fp16:
+        if t.numel() <= INT8_KEEP_FLOAT_MAX_NUMEL:
+            kept = keep_float_tensor(name, t, passthrough_orig_dtypes)
+            passthrough[name] = kept
+            stats["int8_payload_bytes"] += tensor_nbytes(kept)
+            continue
+
+        # Large tensors matching FP16_PASSTHROUGH_PATTERNS are kept as fp16
+        # instead of int8 (e.g. tied embeddings that are quant-sensitive).
+        if any(pattern in name for pattern in FP16_PASSTHROUGH_PATTERNS):
             kept = keep_float_tensor(name, t, passthrough_orig_dtypes)
             passthrough[name] = kept
             stats["int8_payload_bytes"] += tensor_nbytes(kept)
@@ -545,26 +624,11 @@ class RMSNorm(nn.Module):
         return F.rms_norm(x, (x.size(-1),), eps=self.eps)
 
 
-# Global QAT flag - set during training to enable fake quantization
-_qat_active = False
-
-def fake_quantize_per_row(w: Tensor) -> Tensor:
-    """Simulate int8 per-row symmetric quantization with straight-through estimator."""
-    with torch.no_grad():
-        abs_max = w.abs().amax(dim=-1, keepdim=True).clamp_min(1e-8)
-        scale = abs_max / 127.0
-    w_q = (w / scale).round().clamp(-127, 127) * scale
-    return w + (w_q - w).detach()  # STE: gradient flows through as if no quantization
-
-
 class CastedLinear(nn.Linear):
     # Keep weights in fp32 for optimizer/state quality, cast at matmul time for bf16 compute.
     def forward(self, x: Tensor) -> Tensor:
-        w = self.weight
-        if _qat_active and self.training:
-            w = fake_quantize_per_row(w)
         bias = self.bias.to(x.dtype) if self.bias is not None else None
-        return F.linear(x, w.to(x.dtype), bias)
+        return F.linear(x, self.weight.to(x.dtype), bias)
 
 
 def restore_low_dim_params_to_fp32(module: nn.Module) -> None:
@@ -705,17 +769,16 @@ class GPT(nn.Module):
         self,
         vocab_size: int,
         num_layers: int,
-        num_unique_blocks: int,
         model_dim: int,
         num_heads: int,
         num_kv_heads: int,
         mlp_mult: int,
-        mlp_hidden: int,
         tie_embeddings: bool,
         tied_embed_init_std: float,
         logit_softcap: float,
         rope_base: float,
         qk_gain_init: float,
+        mlp_hidden: int = 0,
     ):
         super().__init__()
         if logit_softcap <= 0.0:
@@ -724,10 +787,6 @@ class GPT(nn.Module):
         self.tied_embed_init_std = tied_embed_init_std
         self.logit_softcap = logit_softcap
         self.tok_emb = nn.Embedding(vocab_size, model_dim)
-        self.num_effective_layers = num_layers
-        # Depth recurrence: use fewer unique blocks, loop through them
-        actual_unique = num_unique_blocks if num_unique_blocks > 0 else num_layers
-        self.num_unique_blocks = actual_unique
         self.num_encoder_layers = num_layers // 2
         self.num_decoder_layers = num_layers - self.num_encoder_layers
         self.num_skip_weights = min(self.num_encoder_layers, self.num_decoder_layers)
@@ -743,7 +802,7 @@ class GPT(nn.Module):
                     qk_gain_init,
                     mlp_hidden,
                 )
-                for i in range(actual_unique)
+                for i in range(num_layers)
             ]
         )
         self.final_norm = RMSNorm()
@@ -766,16 +825,13 @@ class GPT(nn.Module):
         skips: list[Tensor] = []
 
         # First half stores skips; second half reuses them in reverse order.
-        # With depth recurrence, blocks are reused cyclically.
         for i in range(self.num_encoder_layers):
-            block_idx = i % self.num_unique_blocks
-            x = self.blocks[block_idx](x, x0)
+            x = self.blocks[i](x, x0)
             skips.append(x)
         for i in range(self.num_decoder_layers):
             if skips:
                 x = x + self.skip_weights[i].to(dtype=x.dtype)[None, None, :] * skips.pop()
-            block_idx = (self.num_encoder_layers + i) % self.num_unique_blocks
-            x = self.blocks[block_idx](x, x0)
+            x = self.blocks[self.num_encoder_layers + i](x, x0)
 
         x = self.final_norm(x).reshape(-1, x.size(-1))
         targets = target_ids.reshape(-1)
@@ -787,6 +843,28 @@ class GPT(nn.Module):
             logits_proj = self.lm_head(x)
         logits = self.logit_softcap * torch.tanh(logits_proj / self.logit_softcap)
         return F.cross_entropy(logits.float(), targets, reduction="mean")
+
+    def forward_logits(self, input_ids: Tensor) -> Tensor:
+        """Return logits without computing loss. Used for sliding window eval."""
+        x = self.tok_emb(input_ids)
+        x = F.rms_norm(x, (x.size(-1),))
+        x0 = x
+        skips: list[Tensor] = []
+        for i in range(self.num_encoder_layers):
+            x = self.blocks[i](x, x0)
+            skips.append(x)
+        for i in range(self.num_decoder_layers):
+            if skips:
+                x = x + self.skip_weights[i].to(dtype=x.dtype)[None, None, :] * skips.pop()
+            x = self.blocks[self.num_encoder_layers + i](x, x0)
+        x = self.final_norm(x)
+        if self.tie_embeddings:
+            logits_proj = F.linear(x, self.tok_emb.weight.to(x.dtype))
+        else:
+            if self.lm_head is None:
+                raise RuntimeError("lm_head is required when tie_embeddings=False")
+            logits_proj = self.lm_head(x)
+        return self.logit_softcap * torch.tanh(logits_proj / self.logit_softcap)
 
 
 # -----------------------------
@@ -888,20 +966,21 @@ def main() -> None:
     # MODEL + OPTIMIZER SETUP
     # -----------------------------
 
+    mlp_hidden = args.mlp_hidden
+    log0(f"mlp_hidden:{mlp_hidden}")
     base_model = GPT(
         vocab_size=args.vocab_size,
         num_layers=args.num_layers,
-        num_unique_blocks=args.num_unique_blocks,
         model_dim=args.model_dim,
         num_heads=args.num_heads,
         num_kv_heads=args.num_kv_heads,
         mlp_mult=args.mlp_mult,
-        mlp_hidden=args.mlp_hidden,
         tie_embeddings=args.tie_embeddings,
         tied_embed_init_std=args.tied_embed_init_std,
         logit_softcap=args.logit_softcap,
         rope_base=args.rope_base,
         qk_gain_init=args.qk_gain_init,
+        mlp_hidden=mlp_hidden,
     ).to(device).bfloat16()
     for module in base_model.modules():
         if isinstance(module, CastedLinear):
@@ -1031,18 +1110,6 @@ def main() -> None:
     # MAIN TRAINING LOOP
     # -----------------------------
 
-    global _qat_active
-    qat_start_step = int(args.qat_start_frac * args.iterations) if args.qat_enabled else args.iterations + 1
-    log0(f"qat_enabled:{args.qat_enabled} qat_start_step:{qat_start_step}")
-    log0(f"outlier_reg_weight:{args.outlier_reg_weight}")
-    log0(f"num_unique_blocks:{base_model.num_unique_blocks} num_effective_layers:{base_model.num_effective_layers}")
-    log0(f"lawa_enabled:{args.lawa_enabled} lawa_interval:{args.lawa_interval}")
-
-    # LAWA: accumulate weight averages during warmdown
-    lawa_count = 0
-    lawa_state: dict[str, Tensor] | None = None
-    in_warmdown = False
-
     training_time_ms = 0.0
     stop_after_step: int | None = None
     torch.cuda.synchronize()
@@ -1091,20 +1158,8 @@ def main() -> None:
             if distributed:
                 model.require_backward_grad_sync = micro_step == grad_accum_steps - 1
             x, y = train_loader.next_batch(args.train_batch_tokens, args.train_seq_len, grad_accum_steps)
-            # Enable/disable QAT based on training progress
-            _qat_active = args.qat_enabled and step >= qat_start_step
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=True):
                 loss = model(x, y)
-                # Compression-aware regularization: penalize weight outliers
-                if args.outlier_reg_weight > 0:
-                    outlier_loss = torch.zeros((), device=device)
-                    for p in matrix_params:
-                        # Penalize the max absolute value per row relative to the row mean
-                        # This encourages uniform weight distributions that quantize well
-                        abs_max = p.abs().amax(dim=-1)
-                        abs_mean = p.abs().mean(dim=-1)
-                        outlier_loss = outlier_loss + ((abs_max / (abs_mean + 1e-8)) - 1.0).mean()
-                    loss = loss + args.outlier_reg_weight * outlier_loss
             train_loss += loss.detach()
             (loss * grad_scale).backward()
         train_loss /= grad_accum_steps
@@ -1125,22 +1180,6 @@ def main() -> None:
         zero_grad_all()
 
         step += 1
-
-        # LAWA: accumulate checkpoint averages during warmdown
-        if args.lawa_enabled and scale < 1.0:
-            if not in_warmdown:
-                in_warmdown = True
-                log0(f"lawa: entering warmdown at step {step}")
-            if step % args.lawa_interval == 0:
-                current_state = {k: v.detach().cpu().clone() for k, v in base_model.state_dict().items()}
-                if lawa_state is None:
-                    lawa_state = current_state
-                    lawa_count = 1
-                else:
-                    lawa_count += 1
-                    for k in lawa_state:
-                        lawa_state[k] += current_state[k]
-
         approx_training_time_ms = training_time_ms + 1000.0 * (time.perf_counter() - t0)
         should_log_train = (
             args.train_log_every > 0
@@ -1166,15 +1205,6 @@ def main() -> None:
         f"reserved: {torch.cuda.max_memory_reserved() // 1024 // 1024} MiB"
     )
 
-    # Apply LAWA averaged weights if available
-    if args.lawa_enabled and lawa_state is not None and lawa_count > 1:
-        log0(f"lawa: applying averaged weights from {lawa_count} checkpoints")
-        for k in lawa_state:
-            lawa_state[k] /= lawa_count
-        base_model.load_state_dict(lawa_state, strict=True)
-    elif args.lawa_enabled:
-        log0("lawa: no averaged weights available (warmdown may not have been reached)")
-
     # -----------------------------
     # SERIALIZATION + ROUNDTRIP VALIDATION
     # -----------------------------
@@ -1190,13 +1220,6 @@ def main() -> None:
         log0(f"Total submission size: {model_bytes + code_bytes} bytes")
 
     quant_obj, quant_stats = quantize_state_dict_int8(base_model.state_dict())
-
-    # Optional post-quantization pruning: zero out small int8 values for better compression
-    if args.prune_ratio > 0:
-        threshold = int(127 * args.prune_ratio)
-        for name in list(quant_obj.get("quantized", {}).keys()):
-            t = quant_obj["quantized"][name]
-            t[t.abs() <= threshold] = 0
 
     # Optional mixed-precision: round middle layers to int6/int4 for better compression
     if args.int4_layers:
@@ -1256,6 +1279,33 @@ def main() -> None:
         f"eval_time:{1000.0 * (time.perf_counter() - t_qeval):.0f}ms"
     )
     log0(f"final_int8_zlib_roundtrip_exact val_loss:{q_val_loss:.8f} val_bpb:{q_val_bpb:.8f}")
+
+    # Sliding window eval: gives each scored token (seq_len - stride) context.
+    if args.eval_stride > 0:
+        torch.cuda.synchronize()
+        t_sw = time.perf_counter()
+        sw_val_loss, sw_val_bpb = eval_val_sliding_window(
+            args,
+            base_model,
+            rank,
+            world_size,
+            device,
+            val_tokens,
+            base_bytes_lut,
+            has_leading_space_lut,
+            is_boundary_token_lut,
+            stride=args.eval_stride,
+        )
+        torch.cuda.synchronize()
+        log0(
+            f"final_sliding_window_eval stride:{args.eval_stride} "
+            f"val_loss:{sw_val_loss:.4f} val_bpb:{sw_val_bpb:.4f} "
+            f"eval_time:{1000.0 * (time.perf_counter() - t_sw):.0f}ms"
+        )
+        log0(
+            f"final_sliding_window_eval_exact stride:{args.eval_stride} "
+            f"val_loss:{sw_val_loss:.8f} val_bpb:{sw_val_bpb:.8f}"
+        )
 
     if distributed:
         dist.destroy_process_group()

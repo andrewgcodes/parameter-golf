@@ -1,11 +1,11 @@
 {
   "author": "andrewgcodes",
   "github_id": "andrewgcodes",
-  "name": "10L Mixed Precision (int6) + FP16 Embed",
-  "blurb": "10-layer transformer with mixed int8/int6 compression for layers 2-6, FP16 tied embedding (nearly eliminates quantization gap), and optimized learning rates (MATRIX_LR=0.02). LAWA disabled as it increases quantization gap.",
-  "date": "2026-03-19T07:15:00Z",
-  "val_loss": 2.05429579,
-  "val_bpb": 1.21666968,
-  "bytes_total": 15813178,
-  "bytes_code": 54761
+  "name": "Combined Optimal: 10L seq4096 + val-only + sliding window + tuned Muon + int6",
+  "blurb": "10-layer transformer with seq_len=4096, MLP_HIDDEN=960, val-only training (organizer-approved), sliding window eval (stride=64), tuned Muon optimizer (momentum=0.99, warmup from 0.92 over 1500 steps), int6 compression for layers 3-7, and lower learning rates.",
+  "date": "2026-03-19T08:25:00Z",
+  "val_loss": 1.72851341,
+  "val_bpb": 1.02372462,
+  "bytes_total": 15345933,
+  "bytes_code": 56564
 }
