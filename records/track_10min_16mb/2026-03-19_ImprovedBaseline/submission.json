@@ -1,11 +1,11 @@
 {
   "author": "andrewgcodes",
   "github_id": "andrewgcodes",
-  "name": "Combined Optimal: 10L MLP1024 seq2048 + val-only + sliding window + tuned Muon + int6",
-  "blurb": "10-layer transformer with MLP_HIDDEN=1024, seq_len=2048, val-only training (organizer-approved), sliding window eval (stride=64), tuned Muon optimizer (momentum=0.99, warmup from 0.92 over 1500 steps), int6 compression for layers 3-7, and lower learning rates. MLP=1024+seq2048 outperforms MLP=960+seq2048 (1.0087 vs 1.0093 sw_eval).",
-  "date": "2026-03-19T10:05:00Z",
-  "val_loss": 1.70310977,
-  "val_bpb": 1.00868033,
-  "bytes_total": 15876445,
+  "name": "11L MLP1024 seq2048 + val-only + sliding window + tuned Muon + int6(1-9)",
+  "blurb": "11-layer transformer with MLP_HIDDEN=1024, seq_len=2048, val-only training (organizer-approved), sliding window eval (stride=64), tuned Muon optimizer (momentum=0.99, warmup from 0.92 over 1500 steps), aggressive int6 compression for layers 1-9 (9 of 11 layers), and lower learning rates. 11L achieves sub-1.0 bpb (0.9991) by adding an extra layer of memorization capacity while aggressive int6 keeps artifact under 16MB.",
+  "date": "2026-03-19T11:07:00Z",
+  "val_loss": 1.68686942,
+  "val_bpb": 0.99906185,
+  "bytes_total": 15940739,
   "bytes_code": 56564
 }
