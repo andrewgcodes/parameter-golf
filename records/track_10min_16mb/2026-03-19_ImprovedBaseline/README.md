@@ -60,7 +60,28 @@ MAX_WALLCLOCK_SECONDS=600 \
 torchrun --standalone --nproc_per_node=8 train_gpt.py
 ```
 
+## Key metrics (from `train.log`)
+
+- Timed training stopped at `10386/20000` steps due to the wallclock cap.
+- Pre-quant eval at stop: `val_loss:2.0490`, `val_bpb:1.2135`
+- Post-quant roundtrip eval: `val_loss:2.0593`, `val_bpb:1.2196`
+- Exact printed metric: `final_int8_zlib_roundtrip_exact val_bpb:1.21963035`
+- Baseline comparison: `1.22436570` (improvement: **0.00474 nats**)
+- Train time: `599984ms` (`step_avg:57.77ms`)
+- Peak memory: `13631 MiB allocated`, `14654 MiB reserved`
+- Serialized model int8+zlib: `15855828 bytes`
+- Code size: `54721 bytes`
+- Total submission size int8+zlib: `15910549 bytes`
+- LAWA: averaged weights from `23` checkpoints (warmdown started at step 9201)
+
+Training volume:
+- Global batch: `524288` tokens/step
+- Total train tokens seen: `5446279168`
+
 ## Experiment Results
+
+### 8xH100 validation (final)
+- **10L_int6_lawa: val_bpb=1.21963035** (10386 steps, 15.9MB artifact)
 
 ### Wave 2: Single H100 experiments (QAT vs no QAT)
 - baseline_1gpu: val_bpb=1.3166 (1579 steps)
@@ -77,5 +98,6 @@ Note: Single-GPU results are directional only. On 8xH100, LAWA warmdown starts a
 
 ## Included files
 
-- `train_gpt.py` (code snapshot with all improvements)
+- `train_gpt.py` (code snapshot used for the run)
+- `train.log` (exact remote training log)
 - `submission.json` (leaderboard metadata)
