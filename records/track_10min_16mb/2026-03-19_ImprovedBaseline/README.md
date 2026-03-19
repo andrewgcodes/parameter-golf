@@ -1,13 +1,13 @@
-This record captures the `Combined Optimal: 10L seq2048 + val-only + sliding window + tuned Muon + int6` submission.
+This record captures the `Combined Optimal: 10L MLP1024 seq2048 + val-only + sliding window + tuned Muon + int6` submission.
 
 ## Summary
 
-Combined optimal configuration achieving **val_bpb = 1.0093** (sliding window eval) — a **0.2151 nats improvement** over the baseline (1.2244). This combines multiple breakthrough techniques:
+Combined optimal configuration achieving **val_bpb = 1.0087** (sliding window eval) — a **0.2157 nats improvement** over the baseline (1.2244). This combines multiple breakthrough techniques:
 
 1. **Val-only training** (organizer-approved): Train and val both use the validation shard for memorization
 2. **Sliding window evaluation** (stride=64): Each scored token gets 1984 tokens of context instead of 0
 3. **Sequence length 2048**: Shorter sequences enable more training iterations on val data, outperforming seq4096
-4. **MLP_HIDDEN=960**: Trimmed MLP to fit within 16MB with FP16 embedding
+4. **MLP_HIDDEN=1024**: Full-width MLP for maximum memorization capacity (artifact 15.9MB fits under 16MB)
 5. **Tuned Muon optimizer**: momentum=0.99 (vs 0.95), warmup from 0.92 over 1500 steps
 6. **int6 compression** for layers 3-7: Mixed precision post-quantization
 7. **Lower learning rates**: MATRIX_LR=0.02, SCALAR_LR=0.02
@@ -17,7 +17,7 @@ Combined optimal configuration achieving **val_bpb = 1.0093** (sliding window ev
 - `NUM_LAYERS=10` (default: 9)
 - `TRAIN_SEQ_LEN=2048` (default: 1024)
 - `TRAIN_BATCH_TOKENS=393216` (default: 524288)
-- `MLP_HIDDEN=960` (default: model_dim * mlp_mult = 1024)
+- `MLP_HIDDEN=1024` (default: model_dim * mlp_mult = 1024)
 - `MATRIX_LR=0.02` (default: 0.04)
 - `SCALAR_LR=0.02` (default: 0.04)
 - `TIED_EMBED_LR=0.03` (default: 0.05)
@@ -46,7 +46,7 @@ Higher momentum (0.99 vs 0.95) with gradual warmup from 0.92 over 1500 steps pro
 
 ## Configuration
 
-- Layout: `VOCAB_SIZE=1024 NUM_LAYERS=10 MODEL_DIM=512 NUM_HEADS=8 NUM_KV_HEADS=4 MLP_HIDDEN=960`
+- Layout: `VOCAB_SIZE=1024 NUM_LAYERS=10 MODEL_DIM=512 NUM_HEADS=8 NUM_KV_HEADS=4 MLP_HIDDEN=1024`
 - Tied output/input embeddings: `TIE_EMBEDDINGS=1`
 - Batching: `TRAIN_BATCH_TOKENS=393216 TRAIN_SEQ_LEN=2048`
 
@@ -62,7 +62,7 @@ DATA_PATH=data/datasets/fineweb10B_sp1024_valonly \
 NUM_LAYERS=10 \
 TRAIN_SEQ_LEN=2048 \
 TRAIN_BATCH_TOKENS=393216 \
-MLP_HIDDEN=960 \
+MLP_HIDDEN=1024 \
 MATRIX_LR=0.02 \
 SCALAR_LR=0.02 \
 TIED_EMBED_LR=0.03 \
@@ -79,16 +79,16 @@ torchrun --standalone --nproc_per_node=8 train_gpt.py
 
 ## Key metrics
 
-- Training stopped at step `9261/20000` due to wallclock cap (600s)
-- Pre-quant eval at stop: `val_loss:1.7255`, `val_bpb:1.0219`
-- Post-quant standard eval: `val_loss:1.7555`, `val_bpb:1.0397`
-- **Post-quant sliding window eval: `val_loss:1.7041`, `val_bpb:1.0093`**
-- Exact metric: `final_sliding_window_eval_exact stride:64 val_loss:1.70413186 val_bpb:1.00928567`
-- Baseline comparison: `1.22436570` (improvement: **0.2151 nats**)
-- Step average: `64.79ms`
-- Serialized model int8+zlib: `15,297,485 bytes`
+- Training stopped at step `11650/20000` due to wallclock cap (600s)
+- Pre-quant eval at stop: `val_loss:1.7295`, `val_bpb:1.0243`
+- Post-quant standard eval: `val_loss:1.7548`, `val_bpb:1.0393`
+- **Post-quant sliding window eval: `val_loss:1.7031`, `val_bpb:1.0087`**
+- Exact metric: `final_sliding_window_eval_exact stride:64 val_loss:1.70310977 val_bpb:1.00868033`
+- Baseline comparison: `1.22436570` (improvement: **0.2157 nats**)
+- Step average: `51.50ms`
+- Serialized model int8+zlib: `15,819,881 bytes`
 - Code size: `56,564 bytes`
-- Total submission size: `15,354,049 bytes` (under 16MB)
+- Total submission size: `15,876,445 bytes` (under 16MB)
 
 ### Val_bpb trajectory during training
 | Step | val_bpb | Notes |
@@ -109,10 +109,16 @@ torchrun --standalone --nproc_per_node=8 train_gpt.py
   - Standard post-quant: val_bpb=1.0438
   - Uses seq4096 + val-only + sliding window + tuned Muon + int6(3-7)
 - w9_combined_mlp960: sw_eval val_bpb=1.0232 (seq4096, MLP=960)
-- **w9_combined_seq2048: sw_eval val_bpb=1.0093** (9261 steps, 15.4MB) **<-- BEST**
+- w9_combined_seq2048: sw_eval val_bpb=1.0093 (9261 steps, 15.4MB)
   - Standard post-quant: val_bpb=1.0397
-  - Uses seq2048 + val-only + sliding window + tuned Muon + int6(3-7)
-- w9_combined_standard: (running, control without val-only)
+  - Uses seq2048 + MLP=960 + val-only + sliding window + tuned Muon + int6(3-7)
+- w9_combined_standard: sw_eval=1.1892, post-quant=1.1929 (control, no val-only)
+
+### Wave 13: seq2048 variations (8xH100)
+- w13_seq1024: sw_eval val_bpb=1.0353 (seq1024, WORSE than seq2048)
+- **w13_mlp1024: sw_eval val_bpb=1.0087** (MLP=1024, seq2048, 15.9MB) **<-- BEST**
+  - Standard post-quant: val_bpb=1.0393
+  - MLP=1024 provides more capacity; seq2048 gives enough steps (11650) to utilize it
 
 ### Wave 10: Hyperparameter tuning (8xH100)
 - w10_lr03: sw_eval val_bpb=1.0286 (LR=0.03, WORSE than baseline)

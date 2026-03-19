@@ -1,11 +1,11 @@
 {
   "author": "andrewgcodes",
   "github_id": "andrewgcodes",
-  "name": "Combined Optimal: 10L seq2048 + val-only + sliding window + tuned Muon + int6",
-  "blurb": "10-layer transformer with seq_len=2048, val-only training (organizer-approved), sliding window eval (stride=64), tuned Muon optimizer (momentum=0.99, warmup from 0.92 over 1500 steps), int6 compression for layers 3-7, and lower learning rates. seq2048 outperforms seq4096 (1.0093 vs 1.0232 sw_eval).",
-  "date": "2026-03-19T09:10:00Z",
-  "val_loss": 1.70413186,
-  "val_bpb": 1.00928567,
-  "bytes_total": 15354049,
+  "name": "Combined Optimal: 10L MLP1024 seq2048 + val-only + sliding window + tuned Muon + int6",
+  "blurb": "10-layer transformer with MLP_HIDDEN=1024, seq_len=2048, val-only training (organizer-approved), sliding window eval (stride=64), tuned Muon optimizer (momentum=0.99, warmup from 0.92 over 1500 steps), int6 compression for layers 3-7, and lower learning rates. MLP=1024+seq2048 outperforms MLP=960+seq2048 (1.0087 vs 1.0093 sw_eval).",
+  "date": "2026-03-19T10:05:00Z",
+  "val_loss": 1.70310977,
+  "val_bpb": 1.00868033,
+  "bytes_total": 15876445,
   "bytes_code": 56564
 }
