@@ -73,6 +73,7 @@ MUON_MOMENTUM=0.99 \
 MUON_MOMENTUM_WARMUP_START=0.92 \
 MUON_MOMENTUM_WARMUP_STEPS=1500 \
 WARMDOWN_ITERS=3000 \
+INIT_SCALE=0.68 \
 EVAL_STRIDE=64 \
 INT4_LAYERS=1,2,3,4,5,6,7,8,9 \
 INT4_STEP=4 \
@@ -93,17 +94,16 @@ torchrun --standalone --nproc_per_node=8 train_gpt.py
 - Code size: `57,778 bytes`
 - Total submission size: `15,943,099 bytes` (under 16MB)
 
-### Val_bpb trajectory during training
+### Val_bpb trajectory during training (Wave 23 exp 1: init_scale=0.68)
 | Step | val_bpb | Notes |
 |:---|:---|:---|
-| 1000 | 1.3358 | early training |
-| 3000 | 1.1888 | |
-| 5000 | 1.1555 | |
-| 7000 | 1.0830 | |
-| 8800 | 1.0452 | |
-| 9000 | 1.0327 | |
-| 9200 | 1.0233 | |
-| 9261 | 1.0219 | wallclock stop |
+| 1000 | 1.3133 | early training |
+| 3000 | 1.1849 | |
+| 5000 | 1.1468 | |
+| 7000 | 1.1341 | |
+| 9000 | 1.0217 | |
+| 10000 | 1.0051 | |
+| 10553 | 0.9999 | wallclock stop |
 
 ## Experiment Results
 
