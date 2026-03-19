@@ -1,14 +1,12 @@
-This record captures the `10L Mixed Precision + LAWA` submission.
+This record captures the `10L Mixed Precision (int6)` submission.
 
 ## Summary
 
-10-layer transformer with mixed int8/int6 compression, LAWA weight averaging, and optimized learning rates. Combines the best techniques from extensive experimentation:
+10-layer transformer with mixed int8/int6 compression and optimized learning rates. LAWA was tested but found to increase the quantization gap, so it is disabled. Combines the best techniques from extensive experimentation:
 
 1. **10 transformer layers** (vs baseline 9) for more model capacity
 2. **Mixed int8/int6 compression**: int6 (step=4 rounding) for middle layers 3-6, full int8 for early/late layers
-3. **LAWA (Lookahead Weight Averaging)**: averages checkpoints during warmdown for free quality boost
-4. **Lower learning rates**: MATRIX_LR=0.02, SCALAR_LR=0.02, TIED_EMBED_LR=0.03 (optimal per LR sweep)
-5. **FP16 tied embedding passthrough** (optional): keeps embedding in fp16 instead of int8
+3. **Lower learning rates**: MATRIX_LR=0.02, SCALAR_LR=0.02, TIED_EMBED_LR=0.03 (optimal per LR sweep)
 
 ## Changes from baseline
 
@@ -19,7 +17,7 @@ This record captures the `10L Mixed Precision + LAWA` submission.
 - `WARMDOWN_ITERS=1200` (default: 1400)
 - `INT4_LAYERS=3,4,5,6` - middle layers quantized to int6 for better compression
 - `INT4_STEP=4` - rounding step for int6 quantization
-- `LAWA_ENABLED=1` with `LAWA_INTERVAL=50`
+- `LAWA_ENABLED=0` (LAWA increases quantization gap by ~0.001 bpb)
 - No architecture or other hyperparameter changes
 
 ## How mixed precision compression works
@@ -32,9 +30,13 @@ The 10L model has 18.9M params, which compresses to ~17.6MB with standard int8+z
 | Layers 3-6 (middle) | int6 (64 levels) | Less sensitive, saves ~1.6MB |
 | Layers 7-9 (late) | int8 (256 levels) | Critical for output quality |
 
-## How LAWA works
+## LAWA Finding
 
-During the warmdown phase of training, LAWA saves checkpoints every 50 steps and averages them at the end. This acts as a free quality boost by smoothing the loss landscape, similar to Stochastic Weight Averaging (SWA) but applied only during warmdown.
+LAWA (Lookahead Weight Averaging) was tested but found to **hurt** post-quantization performance:
+- With LAWA: val_bpb = 1.2196 (quant gap: 0.0061)
+- Without LAWA: val_bpb = 1.2183 (quant gap: 0.0052)
+
+LAWA averaging smooths weights in a way that increases the quantization gap. Disabled for final submission.
 
 ## Configuration
 
@@ -52,8 +54,7 @@ TIED_EMBED_LR=0.03 \
 WARMDOWN_ITERS=1200 \
 INT4_LAYERS=3,4,5,6 \
 INT4_STEP=4 \
-LAWA_ENABLED=1 \
-LAWA_INTERVAL=50 \
+LAWA_ENABLED=0 \
 QAT_ENABLED=0 \
 FP16_EMBED=0 \
 MAX_WALLCLOCK_SECONDS=600 \
@@ -62,26 +63,26 @@ torchrun --standalone --nproc_per_node=8 train_gpt.py
 
 ## Key metrics (from `train.log`)
 
-- Timed training stopped at `10386/20000` steps due to the wallclock cap.
-- Pre-quant eval at stop: `val_loss:2.0490`, `val_bpb:1.2135`
-- Post-quant roundtrip eval: `val_loss:2.0593`, `val_bpb:1.2196`
-- Exact printed metric: `final_int8_zlib_roundtrip_exact val_bpb:1.21963035`
-- Baseline comparison: `1.22436570` (improvement: **0.00474 nats**)
-- Train time: `599984ms` (`step_avg:57.77ms`)
+- Timed training stopped at `10437/20000` steps due to the wallclock cap.
+- Pre-quant eval at stop: `val_loss:2.0483`, `val_bpb:1.2131`
+- Post-quant roundtrip eval: `val_loss:2.0571`, `val_bpb:1.2183`
+- Exact printed metric: `final_int8_zlib_roundtrip_exact val_bpb:1.21831774`
+- Baseline comparison: `1.22436570` (improvement: **0.00605 nats**)
+- Train time: `599935ms` (`step_avg:57.48ms`)
 - Peak memory: `13631 MiB allocated`, `14654 MiB reserved`
-- Serialized model int8+zlib: `15855828 bytes`
+- Serialized model int8+zlib: `15866382 bytes`
 - Code size: `54721 bytes`
-- Total submission size int8+zlib: `15910549 bytes`
-- LAWA: averaged weights from `23` checkpoints (warmdown started at step 9201)
+- Total submission size int8+zlib: `15921103 bytes`
 
 Training volume:
 - Global batch: `524288` tokens/step
-- Total train tokens seen: `5446279168`
+- Total train tokens seen: `5473034240`
 
 ## Experiment Results
 
 ### 8xH100 validation (final)
-- **10L_int6_lawa: val_bpb=1.21963035** (10386 steps, 15.9MB artifact)
+- **10L_int6_no_lawa: val_bpb=1.21831774** (10437 steps, 15.9MB artifact) **<-- best**
+- 10L_int6_lawa: val_bpb=1.21963035 (10386 steps, 15.9MB artifact)
 
 ### Wave 2: Single H100 experiments (QAT vs no QAT)
 - baseline_1gpu: val_bpb=1.3166 (1579 steps)
@@ -94,7 +95,7 @@ Training volume:
 - 10L_int6wide_fp16_lawa: val_bpb=1.3744
 - 10L_int6_lawa_lr04: val_bpb=1.3956
 
-Note: Single-GPU results are directional only. On 8xH100, LAWA warmdown starts at step ~10300 (vs step ~200 on 1GPU), giving proper weight averaging.
+Note: Single-GPU results are directional only. On 8xH100, training runs ~10400 steps vs ~1400 on 1GPU.
 
 ## Included files
 

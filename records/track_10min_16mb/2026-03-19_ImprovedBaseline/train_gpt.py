@@ -92,7 +92,7 @@ class Hyperparameters:
     int4_step = int(os.environ.get("INT4_STEP", 4))  # rounding step: 2=int7, 4=int6, 8=int5, 16=int4
 
     # LAWA: Lookahead Weight Averaging during warmdown for free quality boost.
-    lawa_enabled = bool(int(os.environ.get("LAWA_ENABLED", "1")))
+    lawa_enabled = bool(int(os.environ.get("LAWA_ENABLED", "0")))  # disabled: increases quantization gap
     lawa_interval = int(os.environ.get("LAWA_INTERVAL", 50))  # average every N steps during warmdown
 
     # Optimizer hyperparameters.

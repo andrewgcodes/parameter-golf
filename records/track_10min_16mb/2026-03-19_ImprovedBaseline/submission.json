@@ -1,11 +1,11 @@
 {
   "author": "andrewgcodes",
   "github_id": "andrewgcodes",
-  "name": "10L Mixed Precision + LAWA",
-  "blurb": "10-layer transformer with mixed int8/int6 compression for middle layers (saves ~1.6MB), LAWA weight averaging during warmdown, and optimized learning rates (MATRIX_LR=0.02). Combines best techniques from upstream PRs and systematic experimentation.",
-  "date": "2026-03-19T04:20:00Z",
-  "val_loss": 2.05929476,
-  "val_bpb": 1.21963035,
-  "bytes_total": 15910549,
+  "name": "10L Mixed Precision (int6)",
+  "blurb": "10-layer transformer with mixed int8/int6 compression for middle layers (saves ~1.6MB) and optimized learning rates (MATRIX_LR=0.02). LAWA disabled as it increases quantization gap. Combines best techniques from upstream PRs and systematic experimentation.",
+  "date": "2026-03-19T04:45:00Z",
+  "val_loss": 2.05707848,
+  "val_bpb": 1.21831774,
+  "bytes_total": 15921103,
   "bytes_code": 54721
 }
