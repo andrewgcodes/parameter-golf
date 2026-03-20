@@ -95,6 +95,13 @@ class Hyperparameters:
     swa_start_frac = float(os.environ.get("SWA_START_FRAC", 0.5))
     swa_every = int(os.environ.get("SWA_EVERY", 200))
 
+    ttt_enabled = bool(int(os.environ.get("TTT_ENABLED", "1")))
+    ttt_lr = float(os.environ.get("TTT_LR", 0.004))
+    ttt_epochs = int(os.environ.get("TTT_EPOCHS", 2))
+    ttt_momentum = float(os.environ.get("TTT_MOMENTUM", 0.9))
+    ttt_batch_seqs = int(os.environ.get("TTT_BATCH_SEQS", 32))
+    ttt_freeze_layers = int(os.environ.get("TTT_FREEZE_LAYERS", 4))
+
 # -----------------------------
 # MUON OPTIMIZER
 # -----------------------------
@@ -747,6 +754,73 @@ class GPT(nn.Module):
         return self.logit_softcap * torch.tanh(logits_proj / self.logit_softcap)
 
 
+def ttt_adapt(args, base_model, device, val_tokens, rank=0, world_size=1, log_fn=None):
+    """Test-Time Training with DDP: all GPUs adapt in parallel on val data."""
+    seq_len = args.train_seq_len
+    total_seqs = (val_tokens.numel() - 1) // seq_len
+    batch_seqs = args.ttt_batch_seqs
+
+    # Freeze early layers for faster/better TTT adaptation
+    freeze_n = args.ttt_freeze_layers
+    if freeze_n > 0:
+        for i, block in enumerate(base_model.blocks):
+            if i < freeze_n:
+                for p in block.parameters():
+                    p.requires_grad_(False)
+    ttt_params = [p for p in base_model.parameters() if p.requires_grad]
+    optimizer = torch.optim.SGD(ttt_params, lr=args.ttt_lr, momentum=args.ttt_momentum)
+
+    # Each rank gets a slice of sequences
+    my_start = (total_seqs * rank) // world_size
+    my_end = (total_seqs * (rank + 1)) // world_size
+
+    base_model.train()
+    t0 = time.perf_counter()
+
+    for epoch in range(args.ttt_epochs):
+        epoch_loss_sum = torch.zeros((), device=device, dtype=torch.float64)
+        epoch_tokens = torch.zeros((), device=device, dtype=torch.float64)
+
+        for batch_start in range(my_start, my_end, batch_seqs):
+            batch_end = min(batch_start + batch_seqs, my_end)
+            raw_start = batch_start * seq_len
+            raw_end = batch_end * seq_len + 1
+            local = val_tokens[raw_start:raw_end].to(device=device, dtype=torch.int64, non_blocking=True)
+            x = local[:-1].reshape(-1, seq_len)
+            y = local[1:].reshape(-1, seq_len)
+
+            optimizer.zero_grad(set_to_none=True)
+            with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=True):
+                loss = base_model(x, y)
+            loss.backward()
+
+            # All-reduce gradients across ranks so all GPUs stay in sync
+            if world_size > 1:
+                for p in ttt_params:
+                    if p.grad is not None:
+                        dist.all_reduce(p.grad, op=dist.ReduceOp.AVG)
+
+            torch.nn.utils.clip_grad_norm_(ttt_params, 1.0)
+            optimizer.step()
+
+            epoch_loss_sum += loss.detach().to(torch.float64) * y.numel()
+            epoch_tokens += float(y.numel())
+
+        # Sync loss stats across ranks for logging
+        if world_size > 1:
+            dist.all_reduce(epoch_loss_sum, op=dist.ReduceOp.SUM)
+            dist.all_reduce(epoch_tokens, op=dist.ReduceOp.SUM)
+
+        elapsed = time.perf_counter() - t0
+        avg_loss = epoch_loss_sum.item() / max(epoch_tokens.item(), 1)
+        if log_fn:
+            log_fn(f"ttt_epoch:{epoch+1}/{args.ttt_epochs} loss:{avg_loss:.4f} time:{elapsed:.1f}s")
+
+    elapsed = time.perf_counter() - t0
+    if log_fn:
+        log_fn(f"ttt:done elapsed={elapsed:.1f}s")
+
+
 def eval_val_sliding(
     args: Hyperparameters,
     base_model: nn.Module,
@@ -1173,7 +1247,7 @@ def main() -> None:
 
     # INT6 mixed quantization + zstd/zlib export
     sd_cpu = {k: v.detach().cpu() for k, v in base_model.state_dict().items()}
-    quant_result, quant_meta = mixed_quantize_int6(sd_cpu, {"mlp", "attn"})
+    quant_result, quant_meta = mixed_quantize_int6(sd_cpu, {"mlp", "attn", "other"})
     quant_buf = io.BytesIO()
     torch.save({"w": quant_result, "m": quant_meta}, quant_buf)
     quant_raw = quant_buf.getvalue()
@@ -1201,7 +1275,22 @@ def main() -> None:
     deq_state = dequantize_mixed_int6(quant_state["w"], quant_state["m"], sd_cpu)
     base_model.load_state_dict(deq_state, strict=True)
 
-    # Sliding window eval on int6-roundtripped weights
+    # TTT: adapt model on validation data before final eval (all ranks participate)
+    if args.ttt_enabled:
+        if master_process:
+            log0(f"ttt:start lr={args.ttt_lr} momentum={args.ttt_momentum} epochs={args.ttt_epochs}")
+        restore_low_dim_params_to_fp32(base_model)
+        for p in base_model.parameters():
+            p.requires_grad_(True)
+        ttt_adapt(args, base_model, device, val_tokens, rank=rank, world_size=world_size, log_fn=log0 if master_process else None)
+        for p in base_model.parameters():
+            p.requires_grad_(False)
+        if distributed:
+            dist.barrier()
+        if master_process:
+            log0("TTT complete, starting sliding window eval...")
+
+    # Sliding window eval on int6-roundtripped weights (post-TTT)
     torch.cuda.synchronize()
     t_qeval = time.perf_counter()
     if args.eval_stride > 0 and args.eval_stride < args.train_seq_len:
