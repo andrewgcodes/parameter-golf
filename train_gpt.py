@@ -1,13 +1,13 @@
 """
 Combined optimal v2: MLP 3x + STE fake-int6 quantization-aware training +
-sliding window eval + tuned Muon. Supports both val-only and standard training.
+sliding window eval + tuned Muon.
 
 Techniques:
 - MLP 3x expansion (h=1536) for increased capacity
 - STE fake int6 quantization during training (near-zero quant penalty)
 - Mixed post-training quantization: int6 per-row blocks, int8 per-row embedding
 - Sliding window evaluation (stride=64, every token scored with 960+ context)
-- Tuned Muon (momentum 0.99, lower LR, longer warmdown, seq_len 4096)
+- Tuned Muon (momentum 0.99, lower LR, longer warmdown, seq_len 2048)
 """
 
 from __future__ import annotations
