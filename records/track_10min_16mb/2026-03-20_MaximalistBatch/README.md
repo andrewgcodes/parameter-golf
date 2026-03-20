@@ -19,7 +19,7 @@ Configuration:
 - Layout: `VOCAB_SIZE=1024 NUM_LAYERS=10 MODEL_DIM=512 NUM_HEADS=8 NUM_KV_HEADS=4 MLP_MULT=3`
 - Tied output/input embeddings: `TIE_EMBEDDINGS=1`
 - Batching: `TRAIN_BATCH_TOKENS=1048576 TRAIN_SEQ_LEN=2048`
-- Curriculum: `CURRICULUM_ENABLED=1 CURRICULUM_START_SEQ=1024 CURRICULUM_MID_SEQ=2048`
+- Curriculum: disabled by default (torch.compile incompatibility); enable with `CURRICULUM_ENABLED=1`
 - Quantization: `QUANT_BITS=6` for blocks, int8 for other tensors, FP16 for embeddings
 - Eval: `EVAL_SEQ_LEN=2048 EVAL_STRIDE=64`
 
@@ -38,7 +38,6 @@ TRAIN_SEQ_LEN=2048 \
 EVAL_SEQ_LEN=2048 \
 EVAL_STRIDE=64 \
 WARMDOWN_ITERS=20000 \
-CURRICULUM_ENABLED=1 \
 QUANT_BITS=6 \
 MUON_WEIGHT_DECAY=0.02 \
 GRAD_CLIP_NORM=1.0 \
