@@ -1,0 +1,39 @@
+{
+  "author": "Andrew Gao",
+  "github_id": "andrewgcodes",
+  "name": "Int6 MLP3x + SmearGate + SlidingWindow + SWA",
+  "blurb": "10L 512d MLP3x GQA8/4. Mixed int5(MLP)/int6(attn) per-row quant + zstd-22. SmearGate, Muon+AdamW, WD=0.04, momentum warmup 0.92->0.99, SWA 40% warmdown, 3% pruning, sliding window eval stride=64, orthogonal init, U-Net skips. seq_len=2048, batch=786K.",
+  "date": "2026-03-20",
+  "val_loss": 1.93137471,
+  "val_bpb": 1.14387192,
+  "bytes_total": 15423789,
+  "bytes_code": 52931,
+  "seed_results": {
+    "42": {
+      "val_loss": 1.93137471,
+      "val_bpb": 1.14387192,
+      "steps": 6412,
+      "ms_per_step": 93.58,
+      "artifact_bytes": 15423789
+    },
+    "1337": {
+      "val_loss": 1.93311411,
+      "val_bpb": 1.14490209,
+      "steps": 5929,
+      "ms_per_step": 101.18,
+      "artifact_bytes": 15423789
+    },
+    "7": {
+      "val_loss": 1.93330927,
+      "val_bpb": 1.14501768,
+      "steps": 5952,
+      "ms_per_step": 100.76,
+      "artifact_bytes": 15423789
+    }
+  },
+  "mean_val_bpb": 1.14459723,
+  "std_val_bpb": 0.00063079,
+  "mean_val_loss": 1.93259936,
+  "wallclock_seconds": 600,
+  "eval_time_seconds": 183
+}
