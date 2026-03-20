@@ -1,0 +1,7 @@
+{
+  "submission_name": "MLP3x + STE Int6 QAT + Sliding Window Eval + Tuned Muon",
+  "val_bpb": 0.8972,
+  "val_loss": 1.5149,
+  "variant": "sp1024",
+  "notes": "11-layer model with MLP 3x expansion, STE fake-int6 quantization-aware training on layers 1-9, sliding window evaluation (stride=64), extended RoPE base (200K), extended warmdown (14K steps), tuned Muon optimizer (momentum 0.99), val-only training (organizer-approved)."
+}
