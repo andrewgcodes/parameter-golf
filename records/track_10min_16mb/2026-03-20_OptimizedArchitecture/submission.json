@@ -1,0 +1,11 @@
+{
+  "author": "andrewgcodes",
+  "github_id": "andrewgcodes",
+  "name": "Optimized Architecture",
+  "blurb": "SP-1024 9x512 KV4 with optimized bigram embedding (2048x64), MLP 3x, SWA, SmearGate, RoPE, sliding window eval (stride=64), and int8+zlib roundtrip quantization.",
+  "date": "2026-03-20T05:00:00Z",
+  "val_loss": 1.94944387,
+  "val_bpb": 1.15457352,
+  "bytes_total": 15995881,
+  "bytes_code": 52954
+}
