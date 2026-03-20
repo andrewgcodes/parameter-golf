@@ -104,6 +104,7 @@ class Hyperparameters:
     ttt_momentum = float(os.environ.get("TTT_MOMENTUM", 0.9))
     ttt_batch_seqs = int(os.environ.get("TTT_BATCH_SEQS", 32))
     ttt_freeze_layers = int(os.environ.get("TTT_FREEZE_LAYERS", 4))
+    ttt_num_chunks = int(os.environ.get("TTT_NUM_CHUNKS", 16))
 
 # -----------------------------
 # MUON OPTIMIZER
@@ -768,71 +769,37 @@ class GPT(nn.Module):
         return self.logit_softcap * torch.tanh(logits_proj / self.logit_softcap)
 
 
-def ttt_adapt(args, base_model, device, val_tokens, rank=0, world_size=1, log_fn=None):
-    """Test-Time Training with DDP: all GPUs adapt in parallel on val data."""
-    seq_len = args.train_seq_len
-    total_seqs = (val_tokens.numel() - 1) // seq_len
-    batch_seqs = args.ttt_batch_seqs
-
-    # Freeze early layers for faster/better TTT adaptation
-    freeze_n = args.ttt_freeze_layers
-    if freeze_n > 0:
-        for i, block in enumerate(base_model.blocks):
-            if i < freeze_n:
-                for p in block.parameters():
-                    p.requires_grad_(False)
-    ttt_params = [p for p in base_model.parameters() if p.requires_grad]
-    optimizer = torch.optim.SGD(ttt_params, lr=args.ttt_lr, momentum=args.ttt_momentum)
-
-    # Each rank gets a slice of sequences
+def _ttt_train_chunk(base_model, ttt_params, optimizer, val_tokens,
+                     chunk_start, chunk_end, seq_len, batch_seqs,
+                     device, rank, world_size, num_epochs):
+    """Train on a chunk of validation data (already evaluated). Legal causal TTT."""
+    total_seqs = (chunk_end - chunk_start) // seq_len
+    if total_seqs <= 0:
+        return
     my_start = (total_seqs * rank) // world_size
     my_end = (total_seqs * (rank + 1)) // world_size
 
     base_model.train()
-    t0 = time.perf_counter()
-
-    for epoch in range(args.ttt_epochs):
-        epoch_loss_sum = torch.zeros((), device=device, dtype=torch.float64)
-        epoch_tokens = torch.zeros((), device=device, dtype=torch.float64)
-
+    for epoch in range(num_epochs):
         for batch_start in range(my_start, my_end, batch_seqs):
             batch_end = min(batch_start + batch_seqs, my_end)
-            raw_start = batch_start * seq_len
-            raw_end = batch_end * seq_len + 1
+            raw_start = chunk_start + batch_start * seq_len
+            raw_end = chunk_start + batch_end * seq_len + 1
+            if raw_end > val_tokens.numel():
+                break
             local = val_tokens[raw_start:raw_end].to(device=device, dtype=torch.int64, non_blocking=True)
             x = local[:-1].reshape(-1, seq_len)
             y = local[1:].reshape(-1, seq_len)
-
             optimizer.zero_grad(set_to_none=True)
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=True):
                 loss = base_model(x, y)
             loss.backward()
-
-            # All-reduce gradients across ranks so all GPUs stay in sync
             if world_size > 1:
                 for p in ttt_params:
                     if p.grad is not None:
                         dist.all_reduce(p.grad, op=dist.ReduceOp.AVG)
-
             torch.nn.utils.clip_grad_norm_(ttt_params, 1.0)
             optimizer.step()
-
-            epoch_loss_sum += loss.detach().to(torch.float64) * y.numel()
-            epoch_tokens += float(y.numel())
-
-        # Sync loss stats across ranks for logging
-        if world_size > 1:
-            dist.all_reduce(epoch_loss_sum, op=dist.ReduceOp.SUM)
-            dist.all_reduce(epoch_tokens, op=dist.ReduceOp.SUM)
-
-        elapsed = time.perf_counter() - t0
-        avg_loss = epoch_loss_sum.item() / max(epoch_tokens.item(), 1)
-        if log_fn:
-            log_fn(f"ttt_epoch:{epoch+1}/{args.ttt_epochs} loss:{avg_loss:.4f} time:{elapsed:.1f}s")
-
-    elapsed = time.perf_counter() - t0
-    if log_fn:
-        log_fn(f"ttt:done elapsed={elapsed:.1f}s")
 
 
 def eval_val_sliding(
@@ -1301,25 +1268,122 @@ def main() -> None:
     deq_state = dequantize_mixed_int6(quant_state["w"], quant_state["m"], sd_cpu)
     base_model.load_state_dict(deq_state, strict=True)
 
-    # TTT: adapt model on validation data before final eval (all ranks participate)
-    if args.ttt_enabled:
-        if master_process:
-            log0(f"ttt:start lr={args.ttt_lr} momentum={args.ttt_momentum} epochs={args.ttt_epochs}")
+    # Causal TTT + Sliding window eval (legal: evaluate chunk, then train on it)
+    torch.cuda.synchronize()
+    t_qeval = time.perf_counter()
+
+    if args.ttt_enabled and args.ttt_epochs > 0 and args.eval_stride > 0 and args.eval_stride < args.train_seq_len:
+        log0(f"causal_ttt_eval: chunks={args.ttt_num_chunks} epochs_per_chunk={args.ttt_epochs} "
+             f"lr={args.ttt_lr} stride={args.eval_stride}")
         restore_low_dim_params_to_fp32(base_model)
         for p in base_model.parameters():
             p.requires_grad_(True)
-        ttt_adapt(args, base_model, device, val_tokens, rank=rank, world_size=world_size, log_fn=log0 if master_process else None)
+
+        freeze_n = args.ttt_freeze_layers
+        if freeze_n > 0:
+            for i, block in enumerate(base_model.blocks):
+                if i < freeze_n:
+                    for p in block.parameters():
+                        p.requires_grad_(False)
+        ttt_params = [p for p in base_model.parameters() if p.requires_grad]
+        optimizer = torch.optim.SGD(ttt_params, lr=args.ttt_lr, momentum=args.ttt_momentum)
+
+        seq_len = args.train_seq_len
+        total_tokens = val_tokens.numel() - 1
+        num_chunks = args.ttt_num_chunks
+        chunk_size = total_tokens // num_chunks
+
+        total_loss_sum = torch.zeros((), device=device, dtype=torch.float64)
+        total_token_count = torch.zeros((), device=device, dtype=torch.float64)
+        total_byte_count = torch.zeros((), device=device, dtype=torch.float64)
+
+        for ci in range(num_chunks):
+            chunk_start_tok = ci * chunk_size
+            chunk_end_tok = (ci + 1) * chunk_size if ci < num_chunks - 1 else total_tokens
+
+            stride = args.eval_stride
+            chunk_windows = []
+            for ws in range(0, total_tokens, stride):
+                wend = min(ws + seq_len, total_tokens)
+                wlen = wend - ws
+                if wlen < 1:
+                    continue
+                score_start = ws + (0 if ws == 0 else max(wlen - stride, 0))
+                score_end = ws + wlen
+                if score_start < chunk_end_tok and score_end > chunk_start_tok:
+                    chunk_windows.append(ws)
+
+            my_s = (len(chunk_windows) * rank) // world_size
+            my_e = (len(chunk_windows) * (rank + 1)) // world_size
+            my_chunk_windows = chunk_windows[my_s:my_e]
+
+            base_model.eval()
+            chunk_loss = torch.zeros((), device=device, dtype=torch.float64)
+            chunk_tokens = torch.zeros((), device=device, dtype=torch.float64)
+            chunk_bytes = torch.zeros((), device=device, dtype=torch.float64)
+
+            with torch.inference_mode():
+                for bi in range(0, len(my_chunk_windows), args.eval_batch_seqs):
+                    batch_ws = my_chunk_windows[bi:bi + args.eval_batch_seqs]
+                    bsz = len(batch_ws)
+                    x_batch = torch.zeros(bsz, seq_len, dtype=torch.int64, device=device)
+                    y_batch = torch.zeros(bsz, seq_len, dtype=torch.int64, device=device)
+                    wlens = []
+                    for i, ws in enumerate(batch_ws):
+                        end = min(ws + seq_len, total_tokens)
+                        wlen = end - ws
+                        wlens.append(wlen)
+                        chunk = val_tokens[ws:end + 1].to(dtype=torch.int64, device=device)
+                        x_batch[i, :wlen] = chunk[:-1]
+                        y_batch[i, :wlen] = chunk[1:]
+                    with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+                        logits = base_model.forward_logits(x_batch)
+                    nll = F.cross_entropy(
+                        logits.reshape(-1, logits.size(-1)).float(),
+                        y_batch.reshape(-1), reduction="none",
+                    ).reshape(bsz, seq_len)
+                    for i, ws in enumerate(batch_ws):
+                        wlen = wlens[i]
+                        s = 0 if ws == 0 else max(wlen - stride, 0)
+                        scored_nll = nll[i, s:wlen].to(torch.float64)
+                        chunk_loss += scored_nll.sum()
+                        chunk_tokens += float(wlen - s)
+                        tgt = y_batch[i, s:wlen]
+                        prev = x_batch[i, s:wlen]
+                        tb = base_bytes_lut[tgt].to(torch.float64)
+                        tb += (has_leading_space_lut[tgt] & ~is_boundary_token_lut[prev]).to(torch.float64)
+                        chunk_bytes += tb.sum()
+
+            if dist.is_available() and dist.is_initialized():
+                dist.all_reduce(chunk_loss, op=dist.ReduceOp.SUM)
+                dist.all_reduce(chunk_tokens, op=dist.ReduceOp.SUM)
+                dist.all_reduce(chunk_bytes, op=dist.ReduceOp.SUM)
+
+            total_loss_sum += chunk_loss
+            total_token_count += chunk_tokens
+            total_byte_count += chunk_bytes
+
+            if rank == 0:
+                running_loss = (total_loss_sum / total_token_count).item()
+                running_bpb = running_loss / math.log(2.0) * (total_token_count.item() / total_byte_count.item())
+                log0(f"  causal_ttt chunk {ci+1}/{num_chunks} running_bpb={running_bpb:.6f}")
+
+            _ttt_train_chunk(base_model, ttt_params, optimizer, val_tokens,
+                           chunk_start_tok, chunk_end_tok, seq_len,
+                           args.ttt_batch_seqs, device, rank, world_size,
+                           args.ttt_epochs)
+            if dist.is_available() and dist.is_initialized():
+                dist.barrier()
+
         for p in base_model.parameters():
             p.requires_grad_(False)
-        if distributed:
-            dist.barrier()
-        if master_process:
-            log0("TTT complete, starting sliding window eval...")
 
-    # Sliding window eval on int6-roundtripped weights (post-TTT)
-    torch.cuda.synchronize()
-    t_qeval = time.perf_counter()
-    if args.eval_stride > 0 and args.eval_stride < args.train_seq_len:
+        q_val_loss = (total_loss_sum / total_token_count).item()
+        bits_per_token = q_val_loss / math.log(2.0)
+        tokens_per_byte = total_token_count.item() / total_byte_count.item()
+        q_val_bpb = bits_per_token * tokens_per_byte
+
+    elif args.eval_stride > 0 and args.eval_stride < args.train_seq_len:
         log0(f"final_eval_mode:sliding_window stride:{args.eval_stride} batch_seqs:{args.eval_batch_seqs}")
         q_val_loss, q_val_bpb = eval_val_sliding(
             args, base_model, rank, world_size, device,
