@@ -65,16 +65,18 @@ class Hyperparameters:
     curriculum_phase1_frac = float(os.environ.get("CURRICULUM_PHASE1_FRAC", 0.35))
     curriculum_phase2_frac = float(os.environ.get("CURRICULUM_PHASE2_FRAC", 0.35))
 
-    # Model shape: 5 unique blocks x 2 loops = 10 effective layers, dim=640
-    # Weight sharing via depth recurrence gives wider model in same artifact budget
+    # Model shape
+    model_family = os.environ.get("MODEL_FAMILY", "mpk").strip().lower()
     vocab_size = int(os.environ.get("VOCAB_SIZE", 1024))
-    num_layers = int(os.environ.get("NUM_LAYERS", 5))  # unique blocks
-    num_loops = int(os.environ.get("NUM_LOOPS", 2))    # loops through blocks
+    num_layers = int(os.environ.get("NUM_LAYERS", 8))  # unique blocks
+    num_loops = int(os.environ.get("NUM_LOOPS", 1))    # loops through blocks (depth recurrence)
     num_kv_heads = int(os.environ.get("NUM_KV_HEADS", 4))
-    model_dim = int(os.environ.get("MODEL_DIM", 640))
+    model_dim = int(os.environ.get("MODEL_DIM", 512))
     num_heads = int(os.environ.get("NUM_HEADS", 8))
     mlp_mult = int(os.environ.get("MLP_MULT", 3))
     mlp_hidden = int(os.environ.get("MLP_HIDDEN", 0))
+    mpk_k_stride = int(os.environ.get("MPK_K_STRIDE", 2))
+    mpk_m_stride = int(os.environ.get("MPK_M_STRIDE", 4))
     tie_embeddings = bool(int(os.environ.get("TIE_EMBEDDINGS", "1")))
     rope_base = float(os.environ.get("ROPE_BASE", 10000.0))
     logit_softcap = float(os.environ.get("LOGIT_SOFTCAP", 30.0))
@@ -650,6 +652,182 @@ class Block(nn.Module):
         return x
 
 
+def take_token_stride(x: Tensor, stride: int) -> Tensor:
+    if stride <= 1:
+        return x
+    return x[:, ::stride, :]
+
+
+def hold_upsample(x: Tensor, stride: int, target_len: int) -> Tensor:
+    if stride <= 1:
+        return x[:, :target_len, :]
+    return x.repeat_interleave(stride, dim=1)[:, :target_len, :]
+
+
+class StreamBlock(nn.Module):
+    def __init__(
+        self,
+        dim: int,
+        num_heads: int,
+        num_kv_heads: int,
+        mlp_mult: int,
+        rope_base: float,
+        qk_gain_init: float,
+        mlp_hidden: int = 0,
+    ):
+        super().__init__()
+        self.attn_norm = RMSNorm()
+        self.mlp_norm = RMSNorm()
+        self.attn = CausalSelfAttention(dim, num_heads, num_kv_heads, rope_base, qk_gain_init)
+        self.mlp = MLP(dim, mlp_mult, mlp_hidden)
+        self.attn_scale = nn.Parameter(torch.ones(dim, dtype=torch.float32))
+        self.mlp_scale = nn.Parameter(torch.ones(dim, dtype=torch.float32))
+
+    def forward(self, x: Tensor) -> Tensor:
+        attn_out = self.attn(self.attn_norm(x))
+        x = x + self.attn_scale.to(dtype=x.dtype)[None, None, :] * attn_out
+        x = x + self.mlp_scale.to(dtype=x.dtype)[None, None, :] * self.mlp(self.mlp_norm(x))
+        return x
+
+
+class MPKBlock(nn.Module):
+    def __init__(
+        self,
+        dim: int,
+        num_heads: int,
+        num_kv_heads: int,
+        mlp_mult: int,
+        rope_base: float,
+        qk_gain_init: float,
+        k_stride: int,
+        m_stride: int,
+        mlp_hidden: int = 0,
+    ):
+        super().__init__()
+        self.k_stride = k_stride
+        self.m_stride = m_stride
+        self.resid_mix = nn.Parameter(torch.stack((torch.ones(dim), torch.zeros(dim))).float())
+        self.shared_stem = CastedLinear(dim, dim, bias=False)
+        self.shared_stream = StreamBlock(dim, num_heads, num_kv_heads, mlp_mult, rope_base, qk_gain_init, mlp_hidden)
+        self.k_to_controls = CastedLinear(dim, 4 * dim, bias=False)
+        self.k_to_controls._zero_init = True
+        self.fusion_norm = RMSNorm()
+        self.fusion = CastedLinear(2 * dim, dim, bias=False)
+        self.fusion._zero_init = True
+        self.fusion_scale = nn.Parameter(torch.ones(dim, dtype=torch.float32))
+
+    def forward(self, x: Tensor, x0: Tensor) -> Tensor:
+        mix = self.resid_mix.to(dtype=x.dtype)
+        base = mix[0][None, None, :] * x + mix[1][None, None, :] * x0
+        base = self.shared_stem(base)
+        seq_len = base.size(1)
+
+        p = self.shared_stream(base)
+
+        k = take_token_stride(base, self.k_stride)
+        k = hold_upsample(self.shared_stream(k), self.k_stride, seq_len)
+
+        m = take_token_stride(base, self.m_stride)
+        m = hold_upsample(self.shared_stream(m), self.m_stride, seq_len)
+
+        gate_p, gate_m, shift_p, shift_m = self.k_to_controls(k).chunk(4, dim=-1)
+        p = p * (1.0 + torch.tanh(gate_p)) + shift_p
+        m = m * (1.0 + torch.tanh(gate_m)) + shift_m
+
+        fused = self.fusion(torch.cat((p, m), dim=-1))
+        return x + self.fusion_scale.to(dtype=x.dtype)[None, None, :] * self.fusion_norm(fused)
+
+
+class MPKGPT(nn.Module):
+    def __init__(
+        self,
+        vocab_size: int,
+        num_layers: int,
+        model_dim: int,
+        num_heads: int,
+        num_kv_heads: int,
+        mlp_mult: int,
+        mlp_hidden: int,
+        tie_embeddings: bool,
+        tied_embed_init_std: float,
+        logit_softcap: float,
+        rope_base: float,
+        qk_gain_init: float,
+        k_stride: int,
+        m_stride: int,
+    ):
+        super().__init__()
+        if logit_softcap <= 0.0:
+            raise ValueError(f"logit_softcap must be positive, got {logit_softcap}")
+        self.tie_embeddings = tie_embeddings
+        self.tied_embed_init_std = tied_embed_init_std
+        self.logit_softcap = logit_softcap
+        self.tok_emb = nn.Embedding(vocab_size, model_dim)
+        self.blocks = nn.ModuleList(
+            [
+                MPKBlock(
+                    model_dim, num_heads, num_kv_heads, mlp_mult,
+                    rope_base, qk_gain_init, k_stride, m_stride,
+                    mlp_hidden=mlp_hidden,
+                )
+                for _ in range(num_layers)
+            ]
+        )
+        self.final_norm = RMSNorm()
+        self.lm_head = None if tie_embeddings else CastedLinear(model_dim, vocab_size, bias=False)
+        if self.lm_head is not None:
+            self.lm_head._zero_init = True
+        self._init_weights()
+
+    def _init_weights(self) -> None:
+        if self.tie_embeddings:
+            nn.init.normal_(self.tok_emb.weight, mean=0.0, std=self.tied_embed_init_std)
+            with torch.no_grad():
+                U, S, V = torch.linalg.svd(self.tok_emb.weight.data, full_matrices=False)
+                target_S = S[0] * (1.0 / torch.arange(1, S.shape[0] + 1, dtype=S.dtype)) ** 0.5
+                self.tok_emb.weight.data = (U * target_S[None, :]) @ V
+        for module in self.modules():
+            if isinstance(module, nn.Linear) and getattr(module, "_zero_init", False):
+                nn.init.zeros_(module.weight)
+        num_layers = len(self.blocks)
+        for i, block in enumerate(self.blocks):
+            with torch.no_grad():
+                phase = torch.sigmoid(torch.tensor(3.0 * (i / max(num_layers - 1, 1) - 0.5)))
+                block.resid_mix.data[0] = phase * torch.ones(block.resid_mix.shape[1])
+                block.resid_mix.data[1] = (1 - phase) * torch.ones(block.resid_mix.shape[1])
+
+    def forward(self, input_ids: Tensor, target_ids: Tensor) -> Tensor:
+        x = self.tok_emb(input_ids)
+        x = F.rms_norm(x, (x.size(-1),))
+        x0 = x
+        for block in self.blocks:
+            x = block(x, x0)
+        x = self.final_norm(x).reshape(-1, x.size(-1))
+        targets = target_ids.reshape(-1)
+        if self.tie_embeddings:
+            logits_proj = F.linear(x, self.tok_emb.weight)
+        else:
+            if self.lm_head is None:
+                raise RuntimeError("lm_head is required when tie_embeddings=False")
+            logits_proj = self.lm_head(x)
+        logits = self.logit_softcap * torch.tanh(logits_proj / self.logit_softcap)
+        return F.cross_entropy(logits.float(), targets, reduction="mean")
+
+    @torch.no_grad()
+    def get_logits(self, input_ids: Tensor) -> Tensor:
+        x = self.tok_emb(input_ids)
+        x = F.rms_norm(x, (x.size(-1),))
+        x0 = x
+        for block in self.blocks:
+            x = block(x, x0)
+        x = self.final_norm(x)
+        if self.tie_embeddings:
+            logits_proj = F.linear(x, self.tok_emb.weight)
+        else:
+            logits_proj = self.lm_head(x)
+        return self.logit_softcap * torch.tanh(logits_proj / self.logit_softcap)
+
+
 class GPT(nn.Module):
     def __init__(
         self,
@@ -946,21 +1124,39 @@ def main() -> None:
     # MODEL + OPTIMIZER SETUP
     # -----------------------------
 
-    base_model = GPT(
-        vocab_size=args.vocab_size,
-        num_layers=args.num_layers,
-        num_loops=args.num_loops,
-        model_dim=args.model_dim,
-        num_heads=args.num_heads,
-        num_kv_heads=args.num_kv_heads,
-        mlp_mult=args.mlp_mult,
-        mlp_hidden=args.mlp_hidden,
-        tie_embeddings=args.tie_embeddings,
-        tied_embed_init_std=args.tied_embed_init_std,
-        logit_softcap=args.logit_softcap,
-        rope_base=args.rope_base,
-        qk_gain_init=args.qk_gain_init,
-    ).to(device).bfloat16()
+    if args.model_family == "mpk":
+        base_model = MPKGPT(
+            vocab_size=args.vocab_size,
+            num_layers=args.num_layers,
+            model_dim=args.model_dim,
+            num_heads=args.num_heads,
+            num_kv_heads=args.num_kv_heads,
+            mlp_mult=args.mlp_mult,
+            mlp_hidden=args.mlp_hidden,
+            tie_embeddings=args.tie_embeddings,
+            tied_embed_init_std=args.tied_embed_init_std,
+            logit_softcap=args.logit_softcap,
+            rope_base=args.rope_base,
+            qk_gain_init=args.qk_gain_init,
+            k_stride=args.mpk_k_stride,
+            m_stride=args.mpk_m_stride,
+        ).to(device).bfloat16()
+    else:
+        base_model = GPT(
+            vocab_size=args.vocab_size,
+            num_layers=args.num_layers,
+            num_loops=args.num_loops,
+            model_dim=args.model_dim,
+            num_heads=args.num_heads,
+            num_kv_heads=args.num_kv_heads,
+            mlp_mult=args.mlp_mult,
+            mlp_hidden=args.mlp_hidden,
+            tie_embeddings=args.tie_embeddings,
+            tied_embed_init_std=args.tied_embed_init_std,
+            logit_softcap=args.logit_softcap,
+            rope_base=args.rope_base,
+            qk_gain_init=args.qk_gain_init,
+        ).to(device).bfloat16()
     for module in base_model.modules():
         if isinstance(module, CastedLinear):
             module.float()
@@ -983,7 +1179,7 @@ def main() -> None:
         for name, p in block_named_params
         if p.ndim < 2 or any(pattern in name for pattern in CONTROL_TENSOR_NAME_PATTERNS)
     ]
-    if base_model.skip_weights.numel() > 0:
+    if hasattr(base_model, 'skip_weights') and base_model.skip_weights.numel() > 0:
         scalar_params.append(base_model.skip_weights)
     token_lr = args.tied_embed_lr if args.tie_embeddings else args.embed_lr
     optimizer_tok = torch.optim.Adam(
@@ -1018,8 +1214,12 @@ def main() -> None:
         optimizers.insert(1, optimizer_head)
 
     n_params = sum(p.numel() for p in base_model.parameters())
-    eff_layers = args.num_layers * args.num_loops
-    log0(f"model_params:{n_params} unique_blocks:{args.num_layers} loops:{args.num_loops} effective_layers:{eff_layers}")
+    if args.model_family == "mpk":
+        eff_layers = args.num_layers * 3  # each MPKBlock runs shared_stream 3x
+        log0(f"model_family:mpk model_params:{n_params} blocks:{args.num_layers} effective_layers:{eff_layers} k_stride:{args.mpk_k_stride} m_stride:{args.mpk_m_stride}")
+    else:
+        eff_layers = args.num_layers * args.num_loops
+        log0(f"model_family:gpt model_params:{n_params} unique_blocks:{args.num_layers} loops:{args.num_loops} effective_layers:{eff_layers}")
     log0(f"world_size:{world_size} grad_accum_steps:{grad_accum_steps}")
     log0("sdp_backends:cudnn=False flash=True mem_efficient=False math=False")
     log0(f"attention_mode:gqa num_heads:{args.num_heads} num_kv_heads:{args.num_kv_heads}")
