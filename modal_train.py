@@ -194,7 +194,8 @@ def train():
         "MATRIX_LR", "SCALAR_LR", "TIED_EMBED_LR", "EMBED_LR", "HEAD_LR",
         "QUANT_BITS", "MUON_WEIGHT_DECAY", "WARMDOWN_ITERS",
         "EVAL_STRIDE", "EVAL_SEQ_LEN", "EVAL_BATCH_SEQS",
-        "GRAD_CLIP_NORM", "SEED",
+        "GRAD_CLIP_NORM", "SEED", "COMPILE_MODEL", "WARMUP_STEPS",
+        "COMPILE_FULLGRAPH", "MAX_WALLCLOCK_SECONDS",
     ]
     for var in forward_vars:
         val = os.environ.get(var)
