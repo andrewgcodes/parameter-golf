@@ -46,13 +46,13 @@ class Hyperparameters:
     train_log_every = int(os.environ.get("TRAIN_LOG_EVERY", 200))
 
     iterations = int(os.environ.get("ITERATIONS", 20000))
-    warmdown_iters = int(os.environ.get("WARMDOWN_ITERS", 1200))
+    warmdown_iters = int(os.environ.get("WARMDOWN_ITERS", 1400))
     warmup_steps = int(os.environ.get("WARMUP_STEPS", 20))
     # seq_len=1024 for ~48ms/step (vs 131ms at 2048) = 12K+ steps in 10 min
     train_batch_tokens = int(os.environ.get("TRAIN_BATCH_TOKENS", 524_288))
     train_seq_len = int(os.environ.get("TRAIN_SEQ_LEN", 1024))
     eval_seq_len = int(os.environ.get("EVAL_SEQ_LEN", 1024))
-    eval_stride = int(os.environ.get("EVAL_STRIDE", 64))
+    eval_stride = int(os.environ.get("EVAL_STRIDE", 32))
     max_wallclock_seconds = float(os.environ.get("MAX_WALLCLOCK_SECONDS", 600.0))
     qk_gain_init = float(os.environ.get("QK_GAIN_INIT", 1.5))
 
@@ -65,11 +65,11 @@ class Hyperparameters:
     curriculum_phase1_frac = float(os.environ.get("CURRICULUM_PHASE1_FRAC", 0.35))
     curriculum_phase2_frac = float(os.environ.get("CURRICULUM_PHASE2_FRAC", 0.35))
 
-    # Model shape: 10 layers, dim=480, MLP 3x via mlp_hidden
+    # Model shape: 9 layers, dim=512, MLP 3x via mlp_hidden
     vocab_size = int(os.environ.get("VOCAB_SIZE", 1024))
-    num_layers = int(os.environ.get("NUM_LAYERS", 10))
+    num_layers = int(os.environ.get("NUM_LAYERS", 9))
     num_kv_heads = int(os.environ.get("NUM_KV_HEADS", 4))
-    model_dim = int(os.environ.get("MODEL_DIM", 480))
+    model_dim = int(os.environ.get("MODEL_DIM", 512))
     num_heads = int(os.environ.get("NUM_HEADS", 8))
     mlp_mult = int(os.environ.get("MLP_MULT", 3))
     mlp_hidden = int(os.environ.get("MLP_HIDDEN", 0))
@@ -88,7 +88,7 @@ class Hyperparameters:
     muon_backend_steps = int(os.environ.get("MUON_BACKEND_STEPS", 5))
     muon_momentum_warmup_start = float(os.environ.get("MUON_MOMENTUM_WARMUP_START", 0.85))
     muon_momentum_warmup_steps = int(os.environ.get("MUON_MOMENTUM_WARMUP_STEPS", 500))
-    muon_weight_decay = float(os.environ.get("MUON_WEIGHT_DECAY", 0.0))
+    muon_weight_decay = float(os.environ.get("MUON_WEIGHT_DECAY", 0.02))
     beta1 = float(os.environ.get("BETA1", 0.9))
     beta2 = float(os.environ.get("BETA2", 0.95))
     adam_eps = float(os.environ.get("ADAM_EPS", 1e-8))
