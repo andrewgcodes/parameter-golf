@@ -1,0 +1,11 @@
+{
+  "author": "andrewgcodes",
+  "github_id": "andrewgcodes",
+  "name": "Comprehensive V2",
+  "blurb": "11-layer GPT with MLP 3x, SmearGate, Muon optimizer, int6-in-int8+zlib compression, FP16 tied embedding passthrough, Late-K=1 passthrough, RoPE base=200K, sliding window eval stride=64, warmdown=3000, seq_len=2048, batch=786K tokens.",
+  "date": "2026-03-20T07:20:00Z",
+  "val_loss": 1.94285107,
+  "val_bpb": 1.15066584,
+  "bytes_total": 15911050,
+  "bytes_code": 56125
+}
