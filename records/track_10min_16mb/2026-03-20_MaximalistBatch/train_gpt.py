@@ -65,11 +65,13 @@ class Hyperparameters:
     curriculum_phase1_frac = float(os.environ.get("CURRICULUM_PHASE1_FRAC", 0.35))
     curriculum_phase2_frac = float(os.environ.get("CURRICULUM_PHASE2_FRAC", 0.35))
 
-    # Model shape: 9 layers, dim=512, MLP 3x via mlp_hidden
+    # Model shape: 5 unique blocks x 2 loops = 10 effective layers, dim=640
+    # Weight sharing via depth recurrence gives wider model in same artifact budget
     vocab_size = int(os.environ.get("VOCAB_SIZE", 1024))
-    num_layers = int(os.environ.get("NUM_LAYERS", 9))
+    num_layers = int(os.environ.get("NUM_LAYERS", 5))  # unique blocks
+    num_loops = int(os.environ.get("NUM_LOOPS", 2))    # loops through blocks
     num_kv_heads = int(os.environ.get("NUM_KV_HEADS", 4))
-    model_dim = int(os.environ.get("MODEL_DIM", 512))
+    model_dim = int(os.environ.get("MODEL_DIM", 640))
     num_heads = int(os.environ.get("NUM_HEADS", 8))
     mlp_mult = int(os.environ.get("MLP_MULT", 3))
     mlp_hidden = int(os.environ.get("MLP_HIDDEN", 0))
@@ -653,6 +655,7 @@ class GPT(nn.Module):
         self,
         vocab_size: int,
         num_layers: int,
+        num_loops: int,
         model_dim: int,
         num_heads: int,
         num_kv_heads: int,
@@ -670,10 +673,15 @@ class GPT(nn.Module):
         self.tie_embeddings = tie_embeddings
         self.tied_embed_init_std = tied_embed_init_std
         self.logit_softcap = logit_softcap
+        self.num_loops = num_loops
+        effective_layers = num_layers * num_loops
         self.tok_emb = nn.Embedding(vocab_size, model_dim)
         self.num_encoder_layers = num_layers // 2
         self.num_decoder_layers = num_layers - self.num_encoder_layers
-        self.num_skip_weights = min(self.num_encoder_layers, self.num_decoder_layers)
+        # U-Net skip weights sized for effective layers (across all loops)
+        eff_enc = effective_layers // 2
+        eff_dec = effective_layers - eff_enc
+        self.num_skip_weights = min(eff_enc, eff_dec)
         self.skip_weights = nn.Parameter(torch.ones(self.num_skip_weights, model_dim, dtype=torch.float32))
         self.blocks = nn.ModuleList(
             [
@@ -701,27 +709,42 @@ class GPT(nn.Module):
         for module in self.modules():
             if isinstance(module, nn.Linear) and getattr(module, "_zero_init", False):
                 nn.init.zeros_(module.weight)
-        # Phase-transition resid_mix: early layers trust x0 more, late layers trust residual
-        num_layers = len(self.blocks)
+        # Phase-transition resid_mix: init based on position in effective depth
+        # With depth recurrence, effective position = loop * num_blocks + block_idx
+        num_blocks = len(self.blocks)
+        effective_layers = num_blocks * self.num_loops
+        # Use midpoint of each block's effective positions for init
         for i, block in enumerate(self.blocks):
             with torch.no_grad():
-                phase = torch.sigmoid(torch.tensor(3.0 * (i / max(num_layers - 1, 1) - 0.5)))
+                mid_pos = sum(loop * num_blocks + i for loop in range(self.num_loops)) / self.num_loops
+                phase = torch.sigmoid(torch.tensor(3.0 * (mid_pos / max(effective_layers - 1, 1) - 0.5)))
                 block.resid_mix.data[0] = phase * torch.ones(block.resid_mix.shape[1])
                 block.resid_mix.data[1] = (1 - phase) * torch.ones(block.resid_mix.shape[1])
+
+    def _run_blocks(self, x: Tensor, x0: Tensor) -> Tensor:
+        """Run all blocks with depth recurrence (looping) and U-Net skips."""
+        num_blocks = len(self.blocks)
+        effective_layers = num_blocks * self.num_loops
+        eff_enc = effective_layers // 2
+        skips: list[Tensor] = []
+        skip_idx = 0
+        for eff_i in range(effective_layers):
+            block = self.blocks[eff_i % num_blocks]
+            if eff_i < eff_enc:
+                x = block(x, x0)
+                skips.append(x)
+            else:
+                dec_i = eff_i - eff_enc
+                if dec_i < len(skips):
+                    x = x + self.skip_weights[dec_i].to(dtype=x.dtype)[None, None, :] * skips[len(skips) - 1 - dec_i]
+                x = block(x, x0)
+        return x
 
     def forward(self, input_ids: Tensor, target_ids: Tensor) -> Tensor:
         x = self.tok_emb(input_ids)
         x = F.rms_norm(x, (x.size(-1),))
         x0 = x
-        skips: list[Tensor] = []
-
-        for i in range(self.num_encoder_layers):
-            x = self.blocks[i](x, x0)
-            skips.append(x)
-        for i in range(self.num_decoder_layers):
-            if skips:
-                x = x + self.skip_weights[i].to(dtype=x.dtype)[None, None, :] * skips.pop()
-            x = self.blocks[self.num_encoder_layers + i](x, x0)
+        x = self._run_blocks(x, x0)
 
         x = self.final_norm(x).reshape(-1, x.size(-1))
         targets = target_ids.reshape(-1)
@@ -739,14 +762,7 @@ class GPT(nn.Module):
         x = self.tok_emb(input_ids)
         x = F.rms_norm(x, (x.size(-1),))
         x0 = x
-        skips: list[Tensor] = []
-        for i in range(self.num_encoder_layers):
-            x = self.blocks[i](x, x0)
-            skips.append(x)
-        for i in range(self.num_decoder_layers):
-            if skips:
-                x = x + self.skip_weights[i].to(dtype=x.dtype)[None, None, :] * skips.pop()
-            x = self.blocks[self.num_encoder_layers + i](x, x0)
+        x = self._run_blocks(x, x0)
         x = self.final_norm(x)
         if self.tie_embeddings:
             logits_proj = F.linear(x, self.tok_emb.weight)
@@ -933,6 +949,7 @@ def main() -> None:
     base_model = GPT(
         vocab_size=args.vocab_size,
         num_layers=args.num_layers,
+        num_loops=args.num_loops,
         model_dim=args.model_dim,
         num_heads=args.num_heads,
         num_kv_heads=args.num_kv_heads,
@@ -1001,7 +1018,8 @@ def main() -> None:
         optimizers.insert(1, optimizer_head)
 
     n_params = sum(p.numel() for p in base_model.parameters())
-    log0(f"model_params:{n_params}")
+    eff_layers = args.num_layers * args.num_loops
+    log0(f"model_params:{n_params} unique_blocks:{args.num_layers} loops:{args.num_loops} effective_layers:{eff_layers}")
     log0(f"world_size:{world_size} grad_accum_steps:{grad_accum_steps}")
     log0("sdp_backends:cudnn=False flash=True mem_efficient=False math=False")
     log0(f"attention_mode:gqa num_heads:{args.num_heads} num_kv_heads:{args.num_kv_heads}")
