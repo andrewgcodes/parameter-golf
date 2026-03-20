@@ -288,8 +288,23 @@ def eval_val_sliding(
     seq_len = args.train_seq_len
     total_tokens = val_tokens.numel() - 1
 
-    window_starts = [ws for ws in range(0, total_tokens, stride)
-                     if min(ws + seq_len, total_tokens) - ws >= stride]
+    # Build windows ensuring each one scores unique token positions.
+    # A window at ws scores original positions [ws + score_start, ws + wlen)
+    # where score_start = 0 for ws==0 else wlen - stride.
+    # Filter out windows whose scored region would overlap with the previous window's.
+    window_starts = []
+    next_score_pos = 0  # next original token position that needs scoring
+    for ws in range(0, total_tokens, stride):
+        end = min(ws + seq_len, total_tokens)
+        wlen = end - ws
+        if wlen < stride:
+            break  # remaining windows too short
+        score_start = 0 if ws == 0 else wlen - stride
+        score_end_pos = ws + wlen  # exclusive end in original positions
+        score_start_pos = ws + score_start
+        if score_start_pos >= next_score_pos:
+            window_starts.append(ws)
+            next_score_pos = score_end_pos
     total_windows = len(window_starts)
 
     my_s = (total_windows * rank) // world_size
@@ -411,8 +426,8 @@ def quantize_float_tensor_int6(t: Tensor) -> tuple[Tensor, Tensor]:
         return q, scale.to(dtype=INT8_PER_ROW_SCALE_DTYPE).contiguous()
 
     clip_abs = float(torch.quantile(t32.abs().flatten(), INT6_CLIP_Q).item()) if t32.numel() else 0.0
-    scale = torch.tensor(clip_abs / 127.0 if clip_abs > 0 else 1.0, dtype=torch.float32)
-    q = torch.clamp(torch.round(torch.clamp(t32, -clip_abs, clip_abs) / scale), -127, 127).to(torch.int8).contiguous()
+    scale = torch.tensor(clip_abs / float(INT6_QUANT_RANGE) if clip_abs > 0 else 1.0, dtype=torch.float32)
+    q = torch.clamp(torch.round(torch.clamp(t32, -clip_abs, clip_abs) / scale), -INT6_QUANT_RANGE, INT6_QUANT_RANGE).to(torch.int8).contiguous()
     return q, scale
 
 def quantize_float_tensor_int8(t: Tensor) -> tuple[Tensor, Tensor]:
