@@ -65,9 +65,9 @@ class Hyperparameters:
     curriculum_phase1_frac = float(os.environ.get("CURRICULUM_PHASE1_FRAC", 0.35))
     curriculum_phase2_frac = float(os.environ.get("CURRICULUM_PHASE2_FRAC", 0.35))
 
-    # Model shape: 10 layers, MLP 3x via mlp_hidden
+    # Model shape: 9 layers, MLP 3x via mlp_hidden
     vocab_size = int(os.environ.get("VOCAB_SIZE", 1024))
-    num_layers = int(os.environ.get("NUM_LAYERS", 10))
+    num_layers = int(os.environ.get("NUM_LAYERS", 9))
     num_kv_heads = int(os.environ.get("NUM_KV_HEADS", 4))
     model_dim = int(os.environ.get("MODEL_DIM", 512))
     num_heads = int(os.environ.get("NUM_HEADS", 8))
