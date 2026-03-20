@@ -94,7 +94,9 @@ class Hyperparameters:
 
     swa_enabled = bool(int(os.environ.get("SWA_ENABLED", "1")))
     swa_start_frac = float(os.environ.get("SWA_START_FRAC", 0.5))
-    swa_every = int(os.environ.get("SWA_EVERY", 200))
+    swa_every = int(os.environ.get("SWA_EVERY", 50))
+    prune_frac = float(os.environ.get("PRUNE_FRAC", 0.02))
+    int5_mlp = bool(int(os.environ.get("INT5_MLP", "1")))
 
     ttt_enabled = bool(int(os.environ.get("TTT_ENABLED", "1")))
     ttt_lr = float(os.environ.get("TTT_LR", 0.004))
@@ -339,17 +341,17 @@ def _classify_param(name: str) -> str:
         return "attn"
     return "other"
 
-def quantize_int6_per_row(t: Tensor) -> tuple[Tensor, Tensor]:
+def quantize_intN_per_row(t: Tensor, clip_range: int = 31) -> tuple[Tensor, Tensor]:
     t32 = t.float()
     if t32.ndim == 2:
         row_max = t32.abs().amax(dim=1)
-        scale = (row_max / 31.0).clamp_min(1e-12).to(torch.float16)
+        scale = (row_max / clip_range).clamp_min(1e-12).to(torch.float16)
         scale = scale.clamp_min(torch.finfo(torch.float16).tiny)
-        q = torch.clamp(torch.round(t32 / scale.float()[:, None]), -32, 31).to(torch.int8)
+        q = torch.clamp(torch.round(t32 / scale.float()[:, None]), -(clip_range+1), clip_range).to(torch.int8)
         return q, scale
     amax = t32.abs().max().item()
-    scale = torch.tensor(max(amax / 31.0, 1e-12), dtype=torch.float16)
-    q = torch.clamp(torch.round(t32 / scale.float()), -32, 31).to(torch.int8)
+    scale = torch.tensor(max(amax / clip_range, 1e-12), dtype=torch.float16)
+    q = torch.clamp(torch.round(t32 / scale.float()), -(clip_range+1), clip_range).to(torch.int8)
     return q, scale
 
 def mixed_quantize_int6(state_dict: dict[str, Tensor], int6_cats: set[str]):
@@ -371,10 +373,11 @@ def mixed_quantize_int6(state_dict: dict[str, Tensor], int6_cats: set[str]):
             meta[name] = "passthrough_fp16"
             continue
         if cat in int6_cats and t.ndim >= 1:
-            q, s = quantize_int6_per_row(t)
+            clip = 15 if cat == "mlp" else 31  # int5 for MLP, int6 for attention
+            q, s = quantize_intN_per_row(t, clip_range=clip)
             result[name + ".q"] = q
             result[name + ".scale"] = s
-            meta[name] = {"type": "int6"}
+            meta[name] = {"type": f"int{5 if cat == 'mlp' else 6}"}
         else:
             q, s = quantize_float_tensor(t)
             result[name + ".q"] = q
@@ -558,6 +561,11 @@ class CausalSelfAttention(nn.Module):
         self.proj._zero_init = True
         self.q_gain = nn.Parameter(torch.full((num_heads,), qk_gain_init, dtype=torch.float32))
         self.rotary = Rotary(self.head_dim, base=rope_base)
+        # Attention gate: per-head sigmoid gate fed by first 12 dims of residual
+        attn_gate_enabled = bool(int(os.environ.get("ATTN_GATE_ENABLED", "1")))
+        self.attn_gate = CastedLinear(min(12, dim), num_heads, bias=False) if attn_gate_enabled else None
+        if self.attn_gate is not None:
+            nn.init.zeros_(self.attn_gate.weight)
 
     def forward(self, x: Tensor) -> Tensor:
         bsz, seqlen, dim = x.shape
@@ -574,6 +582,11 @@ class CausalSelfAttention(nn.Module):
             q, k, v, attn_mask=None, is_causal=True,
             enable_gqa=(self.num_kv_heads != self.num_heads),
         )
+        # Apply per-head attention gate
+        if self.attn_gate is not None:
+            gate_input = x[..., :self.attn_gate.weight.size(-1)]  # first 12 dims
+            gate = torch.sigmoid(self.attn_gate(gate_input))  # [B, T, num_heads]
+            y = y * gate.unsqueeze(-1).transpose(1, 2)  # [B, H, T, D] * [B, H, T, 1]
         y = y.transpose(1, 2).contiguous().reshape(bsz, seqlen, dim)
         return self.proj(y)
 
@@ -1245,6 +1258,18 @@ def main() -> None:
         log0(f"Serialized model: {model_bytes} bytes")
         log0(f"Code size: {code_bytes} bytes")
         log0(f"Total submission size: {model_bytes + code_bytes} bytes")
+
+    # Magnitude pruning: zero out smallest weights to improve compression
+    prune_frac = args.prune_frac
+    if prune_frac > 0:
+        with torch.no_grad():
+            for name, param in base_model.named_parameters():
+                if param.ndim == 2 and param.numel() > 65536:
+                    threshold = torch.quantile(param.abs().float().flatten(), prune_frac)
+                    mask = param.abs() < threshold
+                    param.masked_fill_(mask, 0.0)
+                    pruned = mask.sum().item()
+                    log0(f"prune:{name} zeroed {pruned}/{param.numel()} ({100*pruned/param.numel():.1f}%)")
 
     # INT6 mixed quantization + zstd/zlib export
     sd_cpu = {k: v.detach().cpu() for k, v in base_model.state_dict().items()}
