@@ -5,14 +5,12 @@
 ## Run Command
 
 ```bash
-# All parameters are set as defaults in train_gpt.py. Only override BigHash=0:
-BIGRAM_VOCAB_SIZE=0 \
+# All parameters are set as defaults in train_gpt.py. No env overrides needed:
 torchrun --standalone --nproc_per_node=8 \
   records/track_10min_16mb/2026-03-20_Int6_MLP3x_SmearGate_SlidingWindow/train_gpt.py
 
 # With specific seed:
-SEED=42 BIGRAM_VOCAB_SIZE=0 \
-torchrun --standalone --nproc_per_node=8 \
+SEED=42 torchrun --standalone --nproc_per_node=8 \
   records/track_10min_16mb/2026-03-20_Int6_MLP3x_SmearGate_SlidingWindow/train_gpt.py
 ```
 
