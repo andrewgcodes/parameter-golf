@@ -48,10 +48,10 @@ class Hyperparameters:
     iterations = int(os.environ.get("ITERATIONS", 20000))
     warmdown_iters = int(os.environ.get("WARMDOWN_ITERS", 1200))
     warmup_steps = int(os.environ.get("WARMUP_STEPS", 20))
-    # Maximalist batch: 2x the default to see more data per step
-    train_batch_tokens = int(os.environ.get("TRAIN_BATCH_TOKENS", 1_048_576))
-    train_seq_len = int(os.environ.get("TRAIN_SEQ_LEN", 2048))
-    eval_seq_len = int(os.environ.get("EVAL_SEQ_LEN", 2048))
+    # seq_len=1024 for ~48ms/step (vs 131ms at 2048) = 12K+ steps in 10 min
+    train_batch_tokens = int(os.environ.get("TRAIN_BATCH_TOKENS", 524_288))
+    train_seq_len = int(os.environ.get("TRAIN_SEQ_LEN", 1024))
+    eval_seq_len = int(os.environ.get("EVAL_SEQ_LEN", 1024))
     eval_stride = int(os.environ.get("EVAL_STRIDE", 64))
     max_wallclock_seconds = float(os.environ.get("MAX_WALLCLOCK_SECONDS", 600.0))
     qk_gain_init = float(os.environ.get("QK_GAIN_INIT", 1.5))
@@ -95,7 +95,7 @@ class Hyperparameters:
     grad_clip_norm = float(os.environ.get("GRAD_CLIP_NORM", 0.0))
 
     # Int6 quantization for transformer blocks (allows more params in 16MB)
-    quant_bits = int(os.environ.get("QUANT_BITS", 8))
+    quant_bits = int(os.environ.get("QUANT_BITS", 6))
 
 # -----------------------------
 # MUON OPTIMIZER
@@ -499,10 +499,27 @@ class RMSNorm(nn.Module):
         return F.rms_norm(x, (x.size(-1),), eps=self.eps)
 
 
+_STE_QUANT_BITS: int = 0  # Global: set >0 to enable STE fake quant in CastedLinear
+
+
+def _ste_fake_quant(w: Tensor, bits: int) -> Tensor:
+    """Straight-Through Estimator fake quantization."""
+    max_val = (1 << (bits - 1)) - 1  # 31 for int6, 127 for int8
+    w32 = w.float()
+    abs_max = w32.abs().amax(dim=-1, keepdim=True).clamp_min(1e-8)
+    scale = abs_max / max_val
+    q = (w32 / scale).round().clamp(-max_val, max_val)
+    w_q = (q * scale).to(w.dtype)
+    return w + (w_q - w).detach()  # STE: forward uses quantized, backward uses original
+
+
 class CastedLinear(nn.Linear):
     def forward(self, x: Tensor) -> Tensor:
+        w = self.weight.to(x.dtype)
+        if self.training and _STE_QUANT_BITS > 0:
+            w = _ste_fake_quant(w, _STE_QUANT_BITS)
         bias = self.bias.to(x.dtype) if self.bias is not None else None
-        return F.linear(x, self.weight.to(x.dtype), bias)
+        return F.linear(x, w, bias)
 
 
 def restore_low_dim_params_to_fp32(module: nn.Module) -> None:
@@ -930,6 +947,10 @@ def main() -> None:
     for module in base_model.modules():
         if isinstance(module, CastedLinear):
             module.float()
+    # Enable STE fake quantization during training for int6
+    global _STE_QUANT_BITS
+    if args.quant_bits < 8:
+        _STE_QUANT_BITS = args.quant_bits
     restore_low_dim_params_to_fp32(base_model)
     compiled_model = torch.compile(base_model, dynamic=False, fullgraph=True)
     model: nn.Module = DDP(compiled_model, device_ids=[local_rank], broadcast_buffers=False) if distributed else compiled_model
