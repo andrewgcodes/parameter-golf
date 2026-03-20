@@ -180,12 +180,26 @@ def train():
     env = os.environ.copy()
     # Use defaults from train_gpt.py; only override paths and essential config
     env.update({
-        "RUN_ID": "maximalist_batch_v2",
+        "RUN_ID": os.environ.get("RUN_ID", "maximalist_batch_v2"),
         "DATA_PATH": DATASET_DIR,
         "TOKENIZER_PATH": TOKENIZER_PATH_ACTUAL,
         "TRAIN_LOG_EVERY": "100",
         "VAL_LOSS_EVERY": "1000",
     })
+    # Forward any model/training env vars from caller
+    forward_vars = [
+        "MODEL_FAMILY", "NUM_LAYERS", "NUM_LOOPS", "MODEL_DIM", "NUM_HEADS",
+        "NUM_KV_HEADS", "MLP_MULT", "MLP_HIDDEN", "MPK_K_STRIDE", "MPK_M_STRIDE",
+        "TIE_EMBEDDINGS", "TRAIN_BATCH_TOKENS", "TRAIN_SEQ_LEN",
+        "MATRIX_LR", "SCALAR_LR", "TIED_EMBED_LR", "EMBED_LR", "HEAD_LR",
+        "QUANT_BITS", "MUON_WEIGHT_DECAY", "WARMDOWN_ITERS",
+        "EVAL_STRIDE", "EVAL_SEQ_LEN", "EVAL_BATCH_SEQS",
+        "GRAD_CLIP_NORM", "SEED",
+    ]
+    for var in forward_vars:
+        val = os.environ.get(var)
+        if val is not None:
+            env[var] = val
     # Allow debug mode via env var: DEBUG_WALLCLOCK=60 for 1-minute test
     debug_wallclock = os.environ.get("DEBUG_WALLCLOCK", "")
     if debug_wallclock:
