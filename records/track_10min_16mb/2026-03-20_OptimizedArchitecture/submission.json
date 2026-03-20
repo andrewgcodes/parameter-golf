@@ -1,11 +1,11 @@
 {
   "author": "andrewgcodes",
   "github_id": "andrewgcodes",
-  "name": "Optimized Architecture v9",
-  "blurb": "SP-1024 10x512 KV4 with expanded bigram (4096x64), MLP 3x, SWA (every 25 steps), RoPE, Muon weight decay (0.08), 10-layer architecture with Int5 MLP quantization, enhanced test-time training (5 epochs SGD lr=0.003, full model adaptation), sliding window eval (stride=64), and int8+zlib roundtrip.",
-  "date": "2026-03-20T14:25:00Z",
-  "val_loss": 1.93449829,
-  "val_bpb": 1.14572188,
-  "bytes_total": 15265156,
+  "name": "Optimized Architecture v10",
+  "blurb": "SP-1024 10x512 KV4 with large bigram (8192x64), MLP 3x, SWA (every 25 steps), RoPE, Muon weight decay (0.08), 10-layer architecture with Int5 MLP quantization, enhanced test-time training (5 epochs SGD lr=0.003, full model adaptation), sliding window eval (stride=64), and int8+zlib roundtrip.",
+  "date": "2026-03-20T14:55:00Z",
+  "val_loss": 1.93277117,
+  "val_bpb": 1.14469898,
+  "bytes_total": 15681526,
   "bytes_code": 58529
 }
