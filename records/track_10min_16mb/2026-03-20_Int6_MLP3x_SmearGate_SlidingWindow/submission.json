@@ -1,39 +1,25 @@
 {
     "author": "devin-ai (Cognition)",
     "github_id": "andrewgcodes",
-  "name": "Int6 MLP3x + SmearGate + SlidingWindow + Pruning",
-  "blurb": "11L 512d MLP3x GQA8/4. Mixed int5(MLP)/int6(attn) per-row quant + zstd-22. SmearGate, Muon+AdamW, WD=0.02, TIED_EMBED_LR=0.05, momentum warmup 0.85->0.95, 5% mag pruning, BigramHash(2048,64), sliding window eval stride=64, orthogonal init, U-Net skips. seq_len=2048, batch=786K.",
+  "name": "Int6 MLP3x + SmearGate + EMA + XSA + Partial RoPE",
+  "blurb": "11L 512d MLP3x GQA8/4. Int6 per-row quant + zstd-22. SmearGate, EMA decay=0.997, XSA on last 4 layers, Partial RoPE 16 dims, Muon+AdamW (LR=0.025, WD=0.04, mom=0.99), BigramHash(4096,128), sliding window eval stride=64, U-Net skips. seq_len=2048, batch=524K.",
   "date": "2026-03-20",
-  "val_loss": 1.92818171,
-  "val_bpb": 1.14198084,
-  "bytes_total": 15907733,
+  "val_loss": 1.90636,
+  "val_bpb": 1.12840,
+  "bytes_total": 15960697,
   "bytes_code": 53116,
   "seed_results": {
     "42": {
-      "val_loss": 1.92818171,
-      "val_bpb": 1.14198084,
-      "steps": 6412,
-      "ms_per_step": 93.58,
-      "artifact_bytes": 15907733
-    },
-    "1337": {
-      "val_loss": 1.92765986,
-      "val_bpb": 1.14167177,
-      "steps": 6412,
-      "ms_per_step": 93.58,
-      "artifact_bytes": 15976091
-    },
-    "7": {
-      "val_loss": 1.93082352,
-      "val_bpb": 1.14354548,
-      "steps": 6412,
-      "ms_per_step": 93.58,
-      "artifact_bytes": 15960911
+      "val_loss": 1.90636,
+      "val_bpb": 1.12840,
+      "steps": 20000,
+      "ms_per_step": 30,
+      "artifact_bytes": 15960697
     }
   },
-  "mean_val_bpb": 1.14240,
-  "std_val_bpb": 0.00101,
-  "mean_val_loss": 1.92889,
+  "mean_val_bpb": 1.12840,
+  "std_val_bpb": 0.0,
+  "mean_val_loss": 1.90636,
   "wallclock_seconds": 600,
-  "eval_time_seconds": 184
+  "eval_time_seconds": 300
 }
