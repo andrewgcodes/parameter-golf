@@ -1,0 +1,10 @@
+{
+  "val_bpb": 1.14387192,
+  "train_time_seconds": 600,
+  "artifact_bytes": 15423789,
+  "gpu": "8xH100",
+  "seed": 42,
+  "author": "andrewgcodes",
+  "date": "2026-03-20",
+  "description": "10L Int6 Mixed Quant + SmearGate + BigramHash + SWA + Muon WD + Sliding Window Eval"
+}
