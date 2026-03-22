@@ -1,39 +1,39 @@
 {
     "author": "devin-ai (Cognition)",
     "github_id": "andrewgcodes",
-  "name": "Int6 MLP3x + SmearGate + EMA + XSA + Partial RoPE",
-  "blurb": "11L 512d MLP3x GQA8/4. Int6 per-row quant + zstd-22. SmearGate, EMA decay=0.997, XSA on last 4 layers, Partial RoPE 16 dims, Muon+AdamW (LR=0.03, WD=0.035, mom=0.99), BigramHash(4096,128), sliding window eval stride=64, U-Net skips. seq_len=2048, batch=524K, warmdown=6000.",
+  "name": "Int6 MLP3x + EMA + XSA4 + TTT + Partial RoPE + LN Scale",
+  "blurb": "11L 512d MLP3x GQA8/4. Int6 per-row quant + zstd-22. EMA decay=0.997, XSA on last 4 layers, Partial RoPE 16 dims, LN Scale=1, TTT 20 epochs (lr=0.008, momentum=0.9, freeze_blocks=0), Muon+AdamW (LR=0.025, WD=0.04, mom=0.99), BigramHash(2048,128), sliding window eval stride=64. seq_len=2048, batch=786K, warmdown=3000.",
   "date": "2026-03-20",
-  "val_loss": 1.89681,
-  "val_bpb": 1.12342,
-  "bytes_total": 15827598,
-  "bytes_code": 53116,
+  "val_loss": 1.89405,
+  "val_bpb": 1.12176,
+  "bytes_total": 15773418,
+  "bytes_code": 71770,
   "seed_results": {
     "42": {
-      "val_loss": 1.89681,
-      "val_bpb": 1.12342,
-      "steps": 20000,
-      "ms_per_step": 61,
-      "artifact_bytes": 15694189
+      "val_loss": 1.89362,
+      "val_bpb": 1.12120,
+      "steps": 6927,
+      "ms_per_step": 86,
+      "artifact_bytes": 15993000
     },
     "1337": {
-      "val_loss": 1.89873,
-      "val_bpb": 1.12454,
-      "steps": 20000,
-      "ms_per_step": 62,
-      "artifact_bytes": 15827598
+      "val_loss": 1.89405,
+      "val_bpb": 1.12176,
+      "steps": 6973,
+      "ms_per_step": 86,
+      "artifact_bytes": 15657616
     },
     "7": {
-      "val_loss": 1.89584,
-      "val_bpb": 1.12282,
-      "steps": 20000,
-      "ms_per_step": 61,
-      "artifact_bytes": 15793506
+      "val_loss": 1.89585,
+      "val_bpb": 1.12283,
+      "steps": 6846,
+      "ms_per_step": 87,
+      "artifact_bytes": 15773418
     }
   },
-  "mean_val_bpb": 1.12359,
-  "std_val_bpb": 0.00087,
-  "mean_val_loss": 1.89713,
+  "mean_val_bpb": 1.12193,
+  "std_val_bpb": 0.00082,
+  "mean_val_loss": 1.89451,
   "wallclock_seconds": 600,
-  "eval_time_seconds": 307
+  "eval_time_seconds": 303
 }
